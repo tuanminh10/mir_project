@@ -3,7 +3,7 @@ from ultralytics import YOLO
 
 # 1. Đường dẫn đến file model của bạn 
 # Thay 'yolo11m.pt' bằng 'best.pt' sau khi bạn đã train model của riêng mình
-model_path = 'yolo11m.pt'
+model_path = '/home/tuanminh/mir_project/src/mir_robot/tm/best/best.pt'
 model = YOLO(model_path)
 
 # 2. Khởi tạo camera laptop (ID = 0 là camera mặc định)

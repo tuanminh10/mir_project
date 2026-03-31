@@ -510,7 +510,7 @@ def ws_send_goal(robot, diem):
     print("  Gửi goal qua WS /move_base/goal")
 
 
-def wait_arrival(robot, diem, headers=None, timeout=TIMEOUT, rest_mode=False):
+def wait_arrival(robot, diem, headers=None, timeout=TIMEOUT, rest_mode=False, cancel_event=None):
     """Chờ robot đến đích. Dùng WebSocket + REST API polling."""
     pos       = {"x": None, "y": None}
     ws_st     = {"val": None, "was_active": False}
@@ -541,6 +541,19 @@ def wait_arrival(robot, diem, headers=None, timeout=TIMEOUT, rest_mode=False):
     arrive_dist = get_arrive_dist(diem)
 
     while not rospy.is_shutdown() and time.time() < deadline:
+        if cancel_event and cancel_event.is_set():
+            print("  [wait_arrival] Hủy vòng lặp theo yêu cầu!")
+            if headers:
+                # Đưa robot về Pause (4) để đảm bảo dừng di chuyển ngay lập tức
+                api_set_state(headers, 4)
+                try:
+                    requests.delete(f"{API_URL}/mission_queue", headers=headers, timeout=3)
+                except Exception:
+                    pass
+                # Khôi phục trạng thái Ready (3) để sẵn sàng nhận lệnh mới
+                api_set_state(headers, 3)
+            return "cancelled"
+
         now = time.time()
 
         # ── Cập nhật vị trí từ REST nếu WS chưa có ──
@@ -655,7 +668,7 @@ def show_menu():
     print("─" * 45)
 
 
-def handle_command(ten, robot, headers, non_interactive=False):
+def handle_command(ten, robot, headers, non_interactive=False, cancel_event=None):
     """Xử lý một lệnh. Trả về True nếu muốn thoát."""
 
     # ── pos ──
@@ -774,7 +787,10 @@ def handle_command(ten, robot, headers, non_interactive=False):
             return False
         print(f"Đang đến '{target['name']}' ({target.get('pos_x',0):.3f}, {target.get('pos_y',0):.3f}) ...")
         diem_tmp = {"x": target.get('pos_x',0), "y": target.get('pos_y',0), "qz": 0, "qw": 1}
-        result = wait_arrival(robot, diem_tmp, headers, rest_mode=True)
+        result = wait_arrival(robot, diem_tmp, headers, rest_mode=True, cancel_event=cancel_event)
+        if result == "cancelled":
+            print(f"\n✋ Đã hủy lệnh đến '{target['name']}'!")
+            return False
         print(f"\n{'✅ Đã đến' if result is True else '❌ Không đến được'} '{target['name']}'!")
         return False
 
@@ -823,9 +839,12 @@ def handle_command(ten, robot, headers, non_interactive=False):
 
         print("Đang chờ robot đến đích ...")
         timeout_sec = 90 if non_interactive else TIMEOUT
-        result = wait_arrival(robot, diem, headers, timeout=timeout_sec, rest_mode=rest_ok)
+        result = wait_arrival(robot, diem, headers, timeout=timeout_sec, rest_mode=rest_ok, cancel_event=cancel_event)
 
-        if result is True:
+        if result == "cancelled":
+            ok = "cancelled"
+            break
+        elif result is True:
             ok = True
             break
         elif result == "error" and attempt < MAX_RETRIES:
@@ -841,7 +860,9 @@ def handle_command(ten, robot, headers, non_interactive=False):
         else:
             break
 
-    if ok:
+    if ok == "cancelled":
+        print(f"\n✋ Đã hủy lệnh đến '{ten_chuan}' theo yêu cầu!")
+    elif ok:
         print(f"\n✅ Đã đến '{ten_chuan}'!")
     else:
         print(f"\n❌ Không đến được '{ten_chuan}'.")

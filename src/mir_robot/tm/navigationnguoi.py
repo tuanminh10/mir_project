@@ -175,7 +175,7 @@ class PersonLockNavigator:
 		state = status.get("state_id", -1)
 		rospy.loginfo("[NavNguoi] Robot state: %s (%s)", state, status.get("state_text", ""))
 
-		if state == 3:  # Ready
+		if state == 3:  # Ready 
 			return True
 
 		# Xoa mission queue (nguyen nhan error lap lai)

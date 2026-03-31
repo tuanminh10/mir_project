@@ -30,6 +30,9 @@ class MainControlMinimal:
         # Sự kiện dùng để có thể ngắt thời gian chờ sớm (Ví dụ: khách bấm "Xong" sẽ bỏ qua thời gian Timeout)
         self.wait_event = threading.Event()
         
+        # Sự kiện dùng để hủy lệnh di chuyển về sạc ngay lập tức khi có lệnh khác
+        self.charging_cancel_event = threading.Event()
+        
         # Subscribe tín hiệu nút bấm từ ESP32 (Khách gọi)
         self.sub_button = rospy.Subscriber('/table_call_buttons', String, self.on_button_pressed)
         
@@ -92,6 +95,7 @@ class MainControlMinimal:
                 
             rospy.loginfo(f"[Queue] Nhận lệnh KHÁCH GỌI từ '{target_table}'. Đẩy vào hàng đợi.")
             self.task_queue.put({"type": "GUEST_CALL", "target": target_table})
+            self.charging_cancel_event.set() # Hủy về sạc nếu đang chạy
         except Exception as e:
             rospy.logerr(f"Lỗi nút bấm: {e}")
 
@@ -130,6 +134,7 @@ class MainControlMinimal:
             if action == "call_robot":
                 rospy.loginfo("[Queue] Web Bếp nhấn GỌI ROBOT. Đẩy vào hàng đợi.")
                 self.task_queue.put({"type": "KITCHEN_CALL", "target": "bep"})
+                self.charging_cancel_event.set() # Hủy về sạc nếu đang chạy
                 
             elif action == "deliver":
                 target_table = str(data.get("table", "")).strip()
@@ -141,6 +146,7 @@ class MainControlMinimal:
                 if self.current_location != "bep":
                     self.task_queue.put({"type": "KITCHEN_CALL", "target": "bep"})
                 self.task_queue.put({"type": "DELIVER", "target": target_table})
+                self.charging_cancel_event.set() # Hủy về sạc nếu đang chạy
                 
         except Exception as e:
             rospy.logerr(f"Lỗi lệnh bếp: {e}")
@@ -161,7 +167,11 @@ class MainControlMinimal:
             try:
                 # Cố gắng lấy task trong 2 giây
                 task = self.task_queue.get(timeout=2.0)
-                self.execute_task(task)
+                if task["type"] == "RETURN_HOME":
+                    self.charging_cancel_event.clear()
+                    self.execute_task(task, cancel_event=self.charging_cancel_event)
+                else:
+                    self.execute_task(task)
                 self.task_queue.task_done()
                 
             except queue.Empty:
@@ -176,7 +186,7 @@ class MainControlMinimal:
             except Exception as e:
                 rospy.logerr(f"[Worker] Lỗi queue: {e}")
 
-    def execute_task(self, task):
+    def execute_task(self, task, cancel_event=None):
         task_type = task["type"]
         target = task["target"]
         
@@ -184,7 +194,11 @@ class MainControlMinimal:
         
         # 1. DI CHUYỂN
         if target != self.current_location:
-            nav.handle_command(target, self.robot, self.headers, non_interactive=True)
+            nav.handle_command(target, self.robot, self.headers, non_interactive=True, cancel_event=cancel_event)
+            if cancel_event and cancel_event.is_set():
+                rospy.loginfo(f"[Worker] Tạm hủy di chuyển đến '{target}' để ưu tiên lệnh mới.")
+                self.current_location = "interrupted"
+                return # Thoát thực thi ngay lập tức
             self.current_location = target
         else:
             rospy.loginfo(f"[Worker] Khỏi cần đi, Robot đang ở sẵn '{target}'.")
