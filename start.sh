@@ -132,7 +132,7 @@ wait_topic_message() {
     local delay="${3:-1}"
 
     for _ in $(seq 1 "${retries}"); do
-        if docker exec mir_noetic_env bash -lc "source /opt/ros/noetic/setup.bash && timeout 2s rostopic echo -n 1 ${topic} >/dev/null 2>&1"; then
+        if docker exec mir_noetic_env bash -lc "source /opt/ros/noetic/setup.bash && timeout 5s rostopic echo -n 1 ${topic} >/dev/null 2>&1"; then
             return 0
         fi
         sleep "${delay}"
@@ -274,7 +274,7 @@ case "${1:-start}" in
             echo "❌ Robot chưa publish /mir_status_msg. Kết nối chưa hoàn tất."
             echo "📄 Log mir_bridge:"
             docker exec mir_noetic_env bash -lc "tail -n 120 /tmp/mir_bridge.log 2>/dev/null || echo NO_MIR_BRIDGE_LOG"
-            return 1
+            exit 1
         fi
 
         start_order_listener_background
@@ -432,7 +432,7 @@ case "${1:-start}" in
                  source /root/catkin_ws/devel/setup.bash && \
                  pkill -f '^python3[[:space:]]+${SCRIPT}([[:space:]]|$)' 2>/dev/null || true && \
                  sleep 0.3 && \
-                 export FORCE_PULSE_CAPTURE=1 && \
+                 [ -z "$LIBGL_ALWAYS_SOFTWARE" ] && export LIBGL_ALWAYS_SOFTWARE=1; export QT_XCB_GL_INTEGRATION=none; export FORCE_PULSE_CAPTURE=1 && export QT_QPA_PLATFORM=xcb && \
                  cd ${TM_DIR} && python3 ${SCRIPT} ${ARGS}"
         fi
         ;;

@@ -1,0 +1,201 @@
+244:    def verify_items_with_ai(self, expected_coca, expected_lavie):
+245-        if not self.yolo_model:
+246-            rospy.logwarn("⚠️ AI không khả dụng (model bị lỗi hoặc thiếu file). Chạy thẳng cho an toàn.")
+247-            return True
+248-            
+249-        if expected_coca <= 0 and expected_lavie <= 0:
+250-            rospy.logwarn("⚠️ Đơn trên Web bị 0 món. Robot tự chuyển sang chế độ Demo: Bắt bù phải có MỘT CHAI (Coca/Lavie) MỚI CHẠY!")
+251-            expected_coca = 0
+252-            expected_lavie = 1 
+253-            
+254-        rospy.loginfo(f"📸 [AI] Đang mở Camera chạy 30s... Yêu cầu: Coca={expected_coca}, Lavie={expected_lavie}")
+255-        cap = cv2.VideoCapture(0)
+256-        
+257-        if not cap.isOpened():
+258-            rospy.logerr("❌ AI Không thể mở Camera!")
+259-            return False
+260-            
+261-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+262-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+263-        
+264-        start_time = rospy.Time.now()
+265-        timeout = rospy.Duration(30.0) 
+266-        
+267-        # Biến đếm thời gian liên tục đủ đồ
+268-        continuous_success_start = None
+269-        REQUIRED_SUCCESS_DURATION = 10.0 # Bắt buộc phải duy trì đủ đồ trong 10 giây liên tục
+270-        
+271-        while (rospy.Time.now() - start_time) < timeout:
+272-            ret, frame = cap.read()
+273-            if not ret: break
+274-            
+275-            frame = cv2.flip(frame, 1)
+276-            
+277-            # Đã bỏ cờ device='cpu'. Hệ thống sẽ tự động bắt GPU (CUDA) siêu mạnh của bạn!
+278-            results = self.yolo_model.track(frame, persist=True, stream=False, conf=0.40, iou=0.45, imgsz=640, verbose=False)
+279-            
+280-            count_coca = 0
+281-            count_lavie = 0
+282-            annotated_frame = frame.copy()
+283-            
+284-            for r in results:
+285-                annotated_frame = r.plot()
+286-                if r.boxes is not None:
+287-                    for box in r.boxes:
+288-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+289-                        if (x2 - x1) * (y2 - y1) < 1000: continue
+290-                        cls = int(box.cls[0])
+291-                        if cls == 0: count_coca += 1
+292-                        elif cls == 1: count_lavie += 1
+293-
+294-            # Kiểm tra xem frame hiện tại có ĐỦ ĐỒ hay không
+295-            is_enough_now = False
+296-            # NẾU ĐƠN TRỐNG Đòi ít nhất 1 đồ bất kì
+297-            if (expected_coca <= 0 and expected_lavie <= 0) and (count_coca + count_lavie >= 1):
+298-                is_enough_now = True
+299-            # NẾU ĐƠN CÓ DATA THẬT
+300-            elif (expected_coca > 0 or expected_lavie > 0) and (count_coca >= expected_coca and count_lavie >= expected_lavie):
+301-                is_enough_now = True
+302-
+303-            # Xử lý Logic thời gian chờ 10 giây
+304-            if is_enough_now:
+305-                if continuous_success_start is None:
+306-                    continuous_success_start = time.time()
+307-                
+308-                elapsed_time = time.time() - continuous_success_start
+309-                remain_time = max(0, REQUIRED_SUCCESS_DURATION - elapsed_time)
+310-                
+311-                # Hiển thị thanh đếm ngược chữ xanh
+312-                cv2.putText(annotated_frame, f"Giu nguyen: {remain_time:.1f}s", (20, 140), 
+313-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3, cv2.LINE_AA)
+314-                            
+315-                # Nếu đã duy trì liên tục quá 10 giây -> PASS
+316-                if elapsed_time >= REQUIRED_SUCCESS_DURATION: 
+317-                    rospy.loginfo("✅ [AI] Kiểm tra: ĐÃ ĐỦ ĐỒ TRONG 10S! Bắt đầu hành trình chạy.")
+318-                    cap.release()
+319-                    cv2.destroyAllWindows()
+320-                    return True
+321-            else:
+322-                # Nếu bị thiếu hoặc rớt frame -> Bắt đầu đếm lại từ đầu
+323-                continuous_success_start = None
+324-                cv2.putText(annotated_frame, "THIEU DO - DEM LAI", (20, 140), 
+325-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+326-
+327-            # Hiển thị số lượng lên màn hình
+328-            cv2.putText(annotated_frame, f"Coca: {count_coca}/{expected_coca}", (20, 50), 
+329-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+330-            cv2.putText(annotated_frame, f"Lavie: {count_lavie}/{expected_lavie}", (20, 95), 
+331-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3, cv2.LINE_AA)
+332-            
+333-            cv2.imshow("Robot AI - Kiem tra Do An", annotated_frame)
+334-            cv2.waitKey(1)
+335-
+336-        cap.release()
+337-        cv2.destroyAllWindows()
+338-        rospy.logwarn("❌ [AI] Hết 30 giây kiểm tra, VẪN THIẾU ĐỒ! Từ chối rời bếp!")
+339-        return False
+340-
+341-    def wait_until_items_taken(self):
+342-        rospy.loginfo(f"📸 [AI] Đang mở Camera kiểm tra khách lấy đồ. Yêu cầu: Khay trống trong 5s liên tục...")
+343-        cap = cv2.VideoCapture(0)
+344-        
+345-        if not cap.isOpened():
+346-            rospy.logerr("❌ AI Không thể mở Camera!")
+347-            self.wait_event.wait(timeout=10.0)
+348-            return False
+349-            
+350-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+351-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+352-        
+353-        start_time = rospy.Time.now()
+354-        timeout = rospy.Duration(60.0) # Đợi tối đa 60 giây cho khách lấy đồ
+355-        
+356-        continuous_empty_start = None
+357-        REQUIRED_EMPTY_DURATION = 5.0
+358-        
+359-        while (rospy.Time.now() - start_time) < timeout:
+360-            ret, frame = cap.read()
+361-            if not ret: break
+362-            
+363-            frame = cv2.flip(frame, 1)
+364-            results = self.yolo_model.track(frame, persist=True, stream=False, conf=0.40, iou=0.45, imgsz=640, verbose=False)
+365-            
+366-            count_coca = 0
+367-            count_lavie = 0
+368-            annotated_frame = frame.copy()
+369-            
+370-            for r in results:
+371-                annotated_frame = r.plot()
+372-                if r.boxes is not None:
+373-                    for box in r.boxes:
+374-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+375-                        if (x2 - x1) * (y2 - y1) < 1000: continue
+376-                        cls = int(box.cls[0])
+377-                        if cls == 0: count_coca += 1
+378-                        elif cls == 1: count_lavie += 1
+379-
+380-            is_empty = (count_coca == 0 and count_lavie == 0)
+381-
+382-            if is_empty:
+383-                if continuous_empty_start is None:
+384-                    continuous_empty_start = time.time()
+385-                
+386-                elapsed_time = time.time() - continuous_empty_start
+387-                remain_time = max(0, REQUIRED_EMPTY_DURATION - elapsed_time)
+388-                
+389-                cv2.putText(annotated_frame, f"Da xac nhan: {remain_time:.1f}s", (20, 140), 
+390-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 3, cv2.LINE_AA)
+391-                            
+392-                if elapsed_time >= REQUIRED_EMPTY_DURATION: 
+393-                    rospy.loginfo("✅ [AI] Khách đã lấy hết đồ!")
+394-                    cap.release()
+395-                    cv2.destroyAllWindows()
+396-                    return True
+397-            else:
+398-                continuous_empty_start = None
+399-                cv2.putText(annotated_frame, "DANG CHO LAY DO", (20, 140), 
+400-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+401-
+402-            cv2.putText(annotated_frame, f"Coca tren khay: {count_coca}", (20, 50), 
+403-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+404-            cv2.putText(annotated_frame, f"Lavie tren khay: {count_lavie}", (20, 95), 
+405-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3, cv2.LINE_AA)
+406-            
+407-            cv2.imshow("Robot AI - Cho Khach Lay Do", annotated_frame)
+408-            cv2.waitKey(1)
+409-            
+410-            # Cho phép ngắt sớm nếu khách ấn nút xác nhận trên web/nút bấm cứng
+411-            if self.wait_event.is_set():
+412-                rospy.loginfo("[Worker] Sự kiện wait_event được kích hoạt. Thoát AI kiểm tra đồ.")
+413-                break
+414-
+415-        cap.release()
+416-        cv2.destroyAllWindows()
+417-        return False
+418-        
+419-    def execute_task(self, task, cancel_event=None):
+420-        task_type = task["type"]
+421-        target = task["target"]
+422-        
+423-        rospy.loginfo(f">>> BẮT ĐẦU TASK: {task_type} -> Mục tiêu: {target}")
+424-        
+425-        # --- BƯỚC CHECK ĐỒ TRƯỚC KHI ĐI GIAO ---
+426-        if task_type == "DELIVER" and self.current_location in ["bep", "moving_to_bep"]:
+427-            # Lấy order hiện tại của bàn này (có thể Web vẫn 0 0, ta xử lý ở hàm verification_with_ai)
+428-            order = self.active_orders.get(target, {"coca": 0, "lavie": 0})
+429-            
+430-            # GỌI VOICE & CHỜ
+431-            mir_tts.speak_on_mir(f"Hệ thống đang kiểm tra tự động xem đã đủ số lượng món ăn hay chưa.")
+432-            rospy.sleep(3) # đợi nói xong
+433-                
+434-            # Đẩy qua AI Check ngay trên Main Thread, camera sẽ bật 
+435-            is_enough = self.verify_items_with_ai(order["coca"], order["lavie"])
+436-            if not is_enough:
+437-                mir_tts.speak_on_mir("Phát hiện số lượng món ăn chưa đủ, yêu cầu nhà bếp cho thêm hoặc chỉnh lại, robot tạm thời từ chối rời bếp.")
+438-                rospy.loginfo(f"[Worker] Hủy chuyến giao đến {target} do AI ĐÃ TỪ CHỐI! -----------------")
+439-                return # KHÔNG đi giao nữa
+440-            else:
+441-                mir_tts.speak_on_mir("Số lượng món ăn đã đủ. Robot bắt đầu đi giao.")
+442-                rospy.sleep(3) # đợi nói xong đi
+443-
+444-        # 1. DI CHUYỂN

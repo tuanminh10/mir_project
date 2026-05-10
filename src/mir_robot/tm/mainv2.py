@@ -21,7 +21,7 @@ import mir_tts  # Import bộ tổng hợp giọng nói TTS
 class MainControlMinimal:
     def __init__(self):
         rospy.init_node('main_control_v1', anonymous=True)
-        rospy.loginfo("[Main_v1] Đang kết nối duy trì sẵn với Robot (ROSBridge & REST)...")
+        rospy.loginfo("[Main_v1] KHỞI ĐỘNG HỆ THỐNG ACTIONLIB (ROS THUẦN)...")
         
         # --- TẢI MODEL YOLO SẴN NHƯNG ÉP CHẠY BẰNG CHIP CPU BÊN TRONG DOCKER ---
         # Kiểm tra cả 2 đường dẫn (tuyệt đối của máy thực và tương đối trong Docker)
@@ -40,14 +40,20 @@ class MainControlMinimal:
         # --- LƯU TRỮ ĐƠN HÀNG ĐỂ KIỂM TRA ---
         self.active_orders = {} # dict lưu: "ban 3" -> {"coca": x, "lavie": y}
         
-        # Kết nối 1 lần duy nhất lúc bật
-        self.robot = nav.ws_connect()
+        # YÊU CẦU: PURE ROS ACTIONLIB, KHÔNG WEBSOCKET
+        self.robot = None
         self.headers = nav.api_login()
+        
+        import actionlib
+        from move_base_msgs.msg import MoveBaseAction
+        rospy.loginfo("⏳ Đang khởi tạo kết nối SimpleActionClient move_base...")
+        self.action_client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+        
         if self.headers:
-            nav.api_ensure_ready(self.headers)
-            rospy.loginfo("[Main_v1] REST API & ROSBridge đã sẵn sàng!")
-        else:
-            rospy.logwarn("[Main_v1] REST API không khả dụng! Chỉ dùng ROSBridge.")
+            import requests
+            requests.delete(f"{nav.API_URL}/mission_queue", headers=self.headers, timeout=2)
+            nav.api_set_state(self.headers, 3)
+            rospy.loginfo("🔓 Đã mở phanh Dashboard (State 3) để ActionLib hoạt động!")
         
         # --- HỆ THỐNG CƠ CHẾ HÀNG ĐỢI (QUEUE) MỚI ---
         self.task_queue = queue.Queue()
@@ -91,13 +97,9 @@ class MainControlMinimal:
                 try: self.task_queue.get_nowait()
                 except: pass
 
-            # 2. Gửi tín hiệu xoá toàn bộ hàng đợi của MiR bằng REST API
-            if self.headers:
-                import requests
-                requests.delete(f"{nav.API_URL}/mission_queue", headers=self.headers, timeout=3)
-                
-                # 3. Chuyển state về Pause (4) để robot dừng hẳn ngay lập tức, xoá đà đang đi
-                nav.api_set_state(self.headers, 4)
+            # 2. Gửi tín hiệu cancel cho actionlib
+            if hasattr(self, 'action_client'):
+                self.action_client.cancel_all_goals()
                 
             rospy.loginfo("[Main_v1] Đã xóa hàng đợi. Robot dừng an toàn. Tạm biệt!")
             import os
@@ -312,14 +314,63 @@ class MainControlMinimal:
                 mir_tts.speak_on_mir("Số lượng món ăn đã đủ. Robot bắt đầu đi giao.")
                 rospy.sleep(3) # đợi nói xong đi
 
-        # 1. DI CHUYỂN
+        # 1. DI CHUYỂN (PURE ACTIONLIB EXACTLY LIKE hung.py)
         if target != self.current_location:
-            nav.handle_command(target, self.robot, self.headers, non_interactive=True, cancel_event=cancel_event)
-            if cancel_event and cancel_event.is_set():
-                rospy.loginfo(f"[Worker] Tạm hủy di chuyển đến '{target}' để ưu tiên lệnh mới.")
-                self.current_location = "interrupted"
-                return # Thoát thực thi ngay lập tức
-            self.current_location = target
+            if target not in nav.DIEM:
+                rospy.logwarn(f"⚠️ Điểm đến '{target}' không tồn tại trong map!")
+                return
+                
+            diem = nav.DIEM[target]
+            rospy.loginfo(f"🚀 [ROS MoveBase ActionLib]: Gửi mục tiêu {target} ({diem['x']}, {diem['y']}) tới action server...")
+            
+            # --- START ACTIONLIB LOGIC ---
+            import actionlib
+            from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+            from actionlib_msgs.msg import GoalStatus
+            
+            if getattr(self, 'action_client', None) is None:
+                self.action_client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+                
+            self.action_client.wait_for_server()
+            
+            goal = MoveBaseGoal()
+            goal.target_pose.header.frame_id = "map"
+            goal.target_pose.header.stamp = rospy.Time.now()
+            goal.target_pose.pose.position.x = diem["x"]
+            goal.target_pose.pose.position.y = diem["y"]
+            goal.target_pose.pose.orientation.z = diem["qz"]
+            goal.target_pose.pose.orientation.w = diem["qw"]
+            
+            self.action_client.send_goal(goal)
+            
+            is_moving_to_goal = True
+            target_reached = False
+            
+            while is_moving_to_goal and not rospy.is_shutdown():
+                if cancel_event and cancel_event.is_set():
+                    self.action_client.cancel_goal()
+                    rospy.loginfo(f"⚠️ Đã hủy di chuyển bằng ActionLib tới '{target}'")
+                    self.current_location = "interrupted"
+                    return
+                
+                # Check status
+                finished = self.action_client.wait_for_result(rospy.Duration(0.5))
+                if finished:
+                    state = self.action_client.get_state()
+                    if state == GoalStatus.SUCCEEDED:
+                        rospy.loginfo(f"✅ Robot reached the goal {target} using ActionLib")
+                        target_reached = True
+                        break
+                    else:
+                        rospy.logwarn(f"❌ Failed to reach {target}, state: {state}")
+                        break
+
+            # --- END ACTIONLIB LOGIC ---
+            
+            if target_reached:
+                self.current_location = target
+            else:
+                return # Abort the rest of the task if we failed to reach
         else:
             rospy.loginfo(f"[Worker] Khỏi cần đi, Robot đang ở sẵn '{target}'.")
 

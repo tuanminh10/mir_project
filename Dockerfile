@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-mbf-costmap-core \
     ros-noetic-gazebo-ros-control \
     ros-noetic-hector-slam \
+    ros-noetic-robot-localization \
     ros-noetic-costmap-queue \
     ros-noetic-rospy-message-converter \
     ros-noetic-dwb-critics \
@@ -44,9 +45,11 @@ ENV PIP_RETRIES=20
 # Cài pip mới + wheel tools để giảm lỗi resolver/download khi build
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# ĐÃ CẬP NHẬT: Gỡ bản cũ 2.4.1 (chỉ hỗ trợ đến sm_90). 
-# Cài bản PyTorch Preview/Nightly kèm CUDA 12.4 mới nhất dành riêng cho dòng card khủng RTX 50-series (sm_120) của bạn!
-RUN python3 -m pip install --no-cache-dir --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu124
+# Tra lai ban cu cho Docker khoi loi 
+RUN python3 -m pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.4.1 \
+    torchvision==0.19.1
 
 # Base image co the da co psutil (distutils), can cai de bang ignore-installed
 # de tranh loi "Cannot uninstall psutil ... distutils installed project".
@@ -63,6 +66,41 @@ RUN python3 -m pip install --no-cache-dir \
     pyrealsense2==2.54.1.5216 \
     onnxruntime-gpu==1.16.3 \
     opencv-python
+
+# CACH GIAI QUYET ERROR GPU RTX 5060 (sm_120) DUNG CHUNG PYTHON 3.8
+# Pytorch > 2.4 tro len da ngung ho tro Python 3.8, nen ta se khoi tao 1 moi truong doc lap (venv) tren Python 3.9
+RUN apt-get update && apt-get install -y software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3.9 python3.9-venv python3.9-dev && \
+    python3.9 -m venv /opt/ai_venv && \
+    /opt/ai_venv/bin/pip install --upgrade pip
+
+# Cai dat ROs package sang Python 3.9
+RUN /opt/ai_venv/bin/pip install "rospy>=1.15.11" "std_msgs" "geometry_msgs" "sensor_msgs" "nav_msgs" "actionlib_msgs" "tf2_msgs" "tf2_ros" "actionlib" "pyyaml" "requests" "websocket-client==0.53.0" "numpy<2" --extra-index-url https://rospypi.github.io/simple/
+
+# Cai dat AI Model (Pytorch 2.6 cu124 cho phep de ho tro Blackwell sm_120)
+RUN /opt/ai_venv/bin/pip install \
+    matplotlib \
+    pillow \
+    scipy \
+    ultralytics \
+    sherpa-onnx \
+    soundfile \
+    opencv-python-headless \
+    pyrealsense2 \
+    mediapipe==0.10.14 \
+    PyQt5 \
+    websocket-client \
+    lapx \
+    lap \
+    torch torchvision \
+    --extra-index-url https://download.pytorch.org/whl/cu124
+
+# mediapipe kéo theo opencv-contrib-python (có Qt plugin xung đột với PyQt5)
+# => Gỡ sạch mọi bản opencv rồi cài lại DUY NHẤT opencv-python-headless
+RUN /opt/ai_venv/bin/pip uninstall -y opencv-contrib-python opencv-python 2>/dev/null; \
+    /opt/ai_venv/bin/pip install --force-reinstall opencv-python-headless
 
 # Cấu hình Workspace
 RUN mkdir -p /root/catkin_ws/src

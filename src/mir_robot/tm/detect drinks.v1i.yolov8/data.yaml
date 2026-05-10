@@ -1,0 +1,13 @@
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 2
+names: ['Coca', 'Lavie']
+
+roboflow:
+  workspace: kien-ra0r6
+  project: detect-drinks
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/kien-ra0r6/detect-drinks/dataset/1

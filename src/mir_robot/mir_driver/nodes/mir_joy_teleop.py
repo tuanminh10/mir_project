@@ -70,12 +70,16 @@ class MirJoyTeleop:
             # R1 đang giữ -> Cho phép điều khiển
             twist.linear.x = joy_msg.axes[self.axis_linear] * self.current_linear_scale
             twist.angular.z = joy_msg.axes[self.axis_angular] * self.current_angular_scale
+            self.cmd_pub.publish(twist)
+            self.is_moving = True
         else:
-            # Nhả R1 -> Phanh gấp
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-
-        self.cmd_pub.publish(twist)
+            # Chỉ gửi lệnh phanh nếu trước đó đang chạy
+            if getattr(self, 'is_moving', False):
+                twist.linear.x = 0.0
+                twist.angular.z = 0.0
+                self.cmd_pub.publish(twist)
+                self.cmd_pub.publish(twist) # Gửi thêm 1 lần cho chắc
+                self.is_moving = False
 
     def shutdown_hook(self):
         """Gửi lệnh dừng khi tắt node."""

@@ -21,10 +21,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./src:/root/catkin_ws/src:rw
       - ./sherpa-onnx-zipformer-vi-2025-04-20:/root/catkin_ws/models/sherpa-onnx-zipformer-vi-2025-04-20:ro
-      - /dev/input/js0:/dev/input/js0:rw
-      - /dev/snd:/dev/snd:rw
-      - /dev/video0:/dev/video0:rw
-      - /dev/video1:/dev/video1:rw
+      - /dev:/dev:rw
       - /run/user/1000/pulse/native:/tmp/pulse/native
       - /home/tuanminh/.config/pulse/cookie:/root/.config/pulse/cookie:ro
     deploy:

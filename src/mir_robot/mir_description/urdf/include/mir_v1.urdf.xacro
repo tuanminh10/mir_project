@@ -8,6 +8,7 @@
   <xacro:include filename="$(find mir_description)/urdf/include/mir.gazebo.xacro" />
   <xacro:include filename="$(find mir_description)/urdf/include/mir.transmission.xacro" />
   <xacro:include filename="$(find mir_description)/urdf/include/sick_s300.urdf.xacro" />
+  <xacro:include filename="$(find mir_description)/urdf/include/realsense.urdf.xacro" />
 
   <xacro:property name="deg_to_rad" value="0.017453293" />
 
@@ -301,6 +302,11 @@
     <!-- set the gazebo friction parameters for the wheels -->
     <xacro:set_all_wheel_frictions prefix="${prefix}"/>
 
+      <!-- Camera Realsense -->
+    <xacro:realsense_camera prefix="${prefix}" parent="${prefix}surface">
+      <!-- origin xyz="0.4 0 0.1" rpy="0 0 0" / -->
+      <origin xyz="0.30 0.0 0.15" rpy="0 0 0" />
+    </xacro:realsense_camera>
     <xacro:p3d_base_controller prefix="${prefix}" />
   </xacro:macro>
 </robot>

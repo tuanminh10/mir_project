@@ -11,4 +11,5 @@
   </include>
 
   <include file="$(find mir_gazebo)/launch/includes/spawn_maze.launch.xml" />
+  <!-- rviz node removed temp -->
 </launch>

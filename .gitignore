@@ -10,3 +10,4 @@ __pycache__/
 build/
 devel/
 get-pip.py
+core.*

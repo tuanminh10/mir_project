@@ -214,13 +214,18 @@
       ).join('');
 
       const orderCardId = `order-${Date.now()}`;
+      
+      // Lấy thời gian hiện tại
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('vi-VN', { hour12: false });
 
       const orderHTML = `
         <div id="${orderCardId}" class="bg-white border rounded-xl p-4 border-[#d8dee8] shadow-sm flex justify-between items-stretch">
           <div class="flex-1">
             <div class="flex items-center gap-3">
               <span class="bg-[#c21734] text-white px-3 py-1 rounded text-sm font-bold tracking-wider">BÀN ${order.ban}</span>
-              <span class="text-[#6a7485] font-semibold text-sm">Tổng: ${money(order.tong_tien)}</span>
+              <span class="bg-[#e2e8f0] text-[#2f3f58] px-2 py-1 rounded text-xs font-semibold">🕒 ${timeStr}</span>
+              <span class="text-[#6a7485] font-semibold text-sm ml-auto">Tổng: ${money(order.tong_tien)}</span>
             </div>
             <ul class="mt-3 text-lg leading-tight px-1">
               ${itemsListItems}

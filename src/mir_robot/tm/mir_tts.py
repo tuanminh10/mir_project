@@ -43,10 +43,14 @@ def generate_tts_wav(text: str, output_wav_path: str):
         max_num_sentences=1,
     )
     
-    print(f"[TTS] Đang tổng hợp giọng nói cho: '{text}'...")
-    tts = sherpa_onnx.OfflineTts(tts_config)
-    audio = tts.generate(text)
+    # 2. Xử lý các từ mượn tiếng Anh để AI dễ đọc ra tiếng Việt
+    text_fixed = text.replace("order", "o đờ").replace("coca", "cô ca").replace("lavie", "la vi").replace("Menu", "me nu").replace("timeout", "thai mao").replace("reset", "ri sét")
+    print(f"[TTS] Đang tổng hợp giọng nói cho: '{text_fixed}'...")
     
+    tts = sherpa_onnx.OfflineTts(tts_config)
+    # Giảm tốc độ nói xuống 0.85 (bình thường là 1.0)
+    audio = tts.generate(text_fixed, speed=0.85)
+
     # Ghi ra file WAV (.wav)
     sf.write(output_wav_path, audio.samples, audio.sample_rate, subtype='PCM_16')
     print(f"[TTS] Đã lưu file âm thanh tại: {output_wav_path}")

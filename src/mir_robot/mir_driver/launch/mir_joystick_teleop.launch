@@ -21,10 +21,13 @@
   <arg name="max_angular_speed" default="0.3" />
 
   <!-- ========== 1. Kết nối đến MiR thật ========== -->
+  <!-- ĐÃ TẮT BỎ: Tránh xung đột với ./start.sh connect. Nếu chưa connect MiR, xin khởi động riêng. -->
+  <!--
   <include file="$(find mir_driver)/launch/mir.launch">
     <arg name="mir_hostname" value="$(arg mir_hostname)" />
     <arg name="mir_type" value="$(arg mir_type)" />
   </include>
+  -->
 
   <!-- ========== 2. Đọc tín hiệu từ tay cầm vật lý ========== -->
   <node name="joy_node" pkg="joy" type="joy_node" output="screen">

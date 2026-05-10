@@ -9,7 +9,7 @@ const char* ROSBRIDGE_HOST = "192.168.0.182";
 const uint16_t ROSBRIDGE_PORT = 9090;
 const char* ROS_TOPIC = "/table_call_buttons";
 
-const int TABLE_NO = 4;
+const int TABLE_NO = 1;
 const int BUTTON_PIN = 0;
 
 const unsigned long DEBOUNCE_MS = 40;
@@ -70,6 +70,8 @@ void publishTableButtonPressed() {
   payloadDoc["event"] = "button_pressed";
   payloadDoc["source"] = "esp32";
   payloadDoc["seq"] = ++sequenceNo;
+  payloadDoc["x"] = 20.5;
+  payloadDoc["y"] = 14.2;
 
   String payload;
   serializeJson(payloadDoc, payload);

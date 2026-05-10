@@ -1,28 +1,23 @@
-import sys
-
-with open('/tmp/nav.remote.py', 'r') as f:
-    content = f.read()
-
 import re
 
-# We will replace the DIEM block
-old_diem = """DIEM = {
-    "bep":   {"x": 5.5,  "y": 17.05, "qz": 0.707, "qw": 0.707, "arrive_dist": 1.0},
-    "ban 1": {"x": 6.900,  "y": 19.150, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 2": {"x": 6.200,  "y": 14.700, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 3": {"x": 14.550, "y": 17.500, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 4": {"x": 14.800, "y": 14.250, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-}"""
+with open('/home/tuanminh/mir_project/src/mir_robot/tm/mainv2.py', 'r') as f:
+    text = f.read()
 
-new_diem = """DIEM = {
-    "bep":   {"x": 5.5,  "y": 17.05, "qz": 0.707, "qw": 0.707, "arrive_dist": 1.0},
-    "ban 1": {"x": 6.900,  "y": 19.150, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 2": {"x": 6.200,  "y": 14.700, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 3": {"x": 14.550, "y": 17.700, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 4": {"x": 14.800, "y": 14.250, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-}"""
+pattern1 = re.compile(r'    def verify_items_with_ai\(self, expected_coca, expected_lavie\):.*?return False\n', re.DOTALL)
+new_func1 = '''    def verify_items_with_ai(self, expected_coca, expected_lavie):
+        rospy.loginfo("⚠️ Đã bỏ qua bước nhận diện AI 30s tại bếp (do yếu tố camera nhiễu).")
+        return True
+'''
+text = pattern1.sub(new_func1, text, count=1)
 
-content = content.replace(old_diem, new_diem)
+pattern2 = re.compile(r'    def wait_until_items_taken\(self\):.*?return False\n', re.DOTALL)
+new_func2 = '''    def wait_until_items_taken(self):
+        rospy.loginfo("⚠️ Đã bỏ qua bước AI nhận diện đồ 5s tại bàn khách. Đợi 5 giây để khách lấy đồ.")
+        rospy.sleep(5.0)
+        return True
+'''
+text = pattern2.sub(new_func2, text, count=1)
 
-with open('src/mir_robot/tm/navigationcacdiem.py', 'w') as f:
-    f.write(content)
+with open('/home/tuanminh/mir_project/src/mir_robot/tm/mainv2.py', 'w') as f:
+    f.write(text)
+print("Update applied")
