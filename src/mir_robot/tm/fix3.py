@@ -129,10 +129,22 @@ def get_person_relative_position_m(depth_frame, center_pt, frame_w, frame_h, dep
         z_opt = distance_m
 
     pitch_rad = math.radians(20.0)
-    forward_m = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
-    left_m = -x_opt
+    # CÔNG THỨC CHUẨN ĐÃ ĐƯỢC GIÁO SƯ CHỨNG MINH:
+    forward_m_camera = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
     
-    return forward_m, left_m, z_opt
+    # BÙ TRỪ TRỤC QUANG HỌC VÀ VỊ TRÍ LẮP ĐẶT (Camera Calibration):
+    lateral_offset_m = 0.0 # Giáo sư yêu cầu bỏ bù trái/phải
+    forward_offset_m = 0.10 # Bù khung motor nhô ra trước 10cm (Từ đuôi lên đầu)
+    
+    forward_m = forward_m_camera + forward_offset_m
+    left_m = -x_opt + lateral_offset_m
+    
+    # CÔNG THỨC CHUẨN Z:
+    down_m = z_opt * math.sin(pitch_rad) + y_opt * math.cos(pitch_rad)
+    camera_height_m = 1.8
+    z_m = camera_height_m - down_m
+    
+    return forward_m, left_m, z_m
 
 # ================= GUI Map =================
 class MapLabel(QLabel):
@@ -155,6 +167,8 @@ class MapLabel(QLabel):
         self.obstacle_px = None
         self.obs3d_px = None
         self.table_box_px = []
+        self.scan_msg = None
+        self.last_rejected_pts = None
 
     def set_robot_pose(self, wx, wy, yaw=0.0):
         if not self.map_info: return
@@ -181,6 +195,7 @@ class MapLabel(QLabel):
     def update_view(self):
         if self.map_img is None: return
         display_img = self.map_img.copy()
+        h, w, ch = display_img.shape
 
         # Vẽ Target (Khách hàng)
         if self.target_px:
@@ -204,13 +219,22 @@ class MapLabel(QLabel):
             cv2.circle(display_img, self.obs3d_px, 5, (255, 0, 255), -1) # Tím
             cv2.putText(display_img, "3D OBS", (self.obs3d_px[0]+10, self.obs3d_px[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
 
+        # VẼ FOOTPRINT ĐANG TEST / BỊ TỪ CHỐI (MÀU ĐỎ) ĐỂ ANIMATION
+        if hasattr(self, 'last_rejected_pts') and self.last_rejected_pts is not None:
+            rej_pts = self.last_rejected_pts
+            draw_pts = []
+            for pt in rej_pts:
+                draw_pts.append([pt[0][0], self.map_info.height - pt[0][1] - 1])
+            draw_pts = np.array([draw_pts], np.int32)
+            cv2.polylines(display_img, draw_pts, True, (0, 0, 255), 2) # Đỏ
+            cv2.putText(display_img, "TESTING COLLISION...", (draw_pts[0][0][0], draw_pts[0][0][1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
         # Vẽ Goal an toàn
         if self.goal_px:
             # VẼ CHÍNH XÁC FOOTPRINT HÌNH CHỮ NHẬT CỦA MIR ĐỂ USER KIỂM CHỨNG
             if self.map_info and hasattr(self, 'goal_yaw'):
                 res = self.map_info.resolution
-                # Footprint từ MiR: [[0.506, -0.32], [0.506, 0.32], [-0.454, 0.32], [-0.454, -0.32]]
-                fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
+                fp_m = [(0.42, -0.28), (0.42, 0.28), (-0.42, 0.28), (-0.42, -0.28)]
                 pts = []
                 gui_yaw = -self.goal_yaw # Giao diện OpenCV có trục Y hướng xuống
                 px, py = self.goal_px
@@ -222,7 +246,7 @@ class MapLabel(QLabel):
                 pts = np.array(pts, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(display_img, [pts], True, (0, 255, 255), 2) # Hình chữ nhật Vàng
                 cv2.putText(display_img, "MiR Footprint", (px+10, py+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            
+                
             # Vẽ đường đỗ từ Robot ra Smart Goal (Màu Vàng RGB: 255, 255, 0)
             if self.robot_px:
                 cv2.line(display_img, self.robot_px, self.goal_px, (255, 255, 0), 2, cv2.LINE_AA)
@@ -235,6 +259,22 @@ class MapLabel(QLabel):
                 end_x = int(gx + ar_len * math.cos(gui_yaw))
                 end_y = int(gy + ar_len * math.sin(gui_yaw))
                 cv2.arrowedLine(display_img, (gx, gy), (end_x, end_y), (0, 255, 0), 3, tipLength=0.3)
+                
+                # Bỏ vẽ all_rejected_pts theo yêu cầu User
+                        
+                # VẼ FOOTPRINT CỦA XE TẠI ĐIỂM ĐỖ CHỐT ĐƯỢC (MÀU XANH LÁ)
+                # Lấy đúng kích thước hình chữ nhật gốc
+                fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
+                res = self.map_info.resolution
+                goal_pts = []
+                for dx, dy in fp_m:
+                    gyaw = self.goal_yaw
+                    rx = (dx * math.cos(gyaw) - dy * math.sin(gyaw)) / res
+                    ry = (dx * math.sin(gyaw) + dy * math.cos(gyaw)) / res
+                    goal_pts.append([int(gx + rx), int(gy - ry)]) # Trừ ry vì Y lật
+                goal_pts = np.array(goal_pts, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(display_img, [goal_pts], True, (0, 255, 0), 2) # Vẽ hình xe màu Xanh Lá
+                cv2.putText(display_img, "ROBOT (ACCEPTED)", (gx - 50, gy - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # Vẽ Robot (cập nhật theo Footprint thực tế)
         if self.robot_px and self.map_info:
@@ -249,7 +289,6 @@ class MapLabel(QLabel):
             cv2.fillPoly(display_img, [pts], (0, 165, 255))
             cv2.polylines(display_img, [pts], True, (0, 0, 0), 2)
 
-        h, w, ch = display_img.shape
         qImg = QImage(display_img.data, w, h, ch * w, QImage.Format_RGB888).copy()
         self.setPixmap(QPixmap.fromImage(qImg))
 
@@ -397,7 +436,7 @@ class VideoThread(QThread):
                             elif v_kpt(nose):
                                 person_center_x = nose[0].item()
                                 person_center_y = nose[1].item()
-                    
+                
                     # SỬA LỖI TỌA ĐỘ CUSTOMER CÁCH XA BÀN:
                     # Bỏ dùng Segmentation vì nó dính background (bức tường 2.49m)
                     # Bỏ quét toàn bộ Box vì 5% percentile sẽ lấy trúng "Bàn tay đang giơ ra" -> d_m bị ngắn lại!
@@ -416,18 +455,18 @@ class VideoThread(QThread):
                                             orig_px = frame_w - 1 - px
                                             d = depth_frame.get_distance(orig_px, py)
                                             if 0.2 < d < 6.0: body_distances.append(d)
-                                            
+                                        
                     if body_distances:
                         body_distances.sort()
-                        # DÙNG MEDIAN 50% THAY VÌ 10%:
+                        # DÙNG PERCENTILE 15% ĐỂ TRÁNH NHIỄU NỀN (WALL):
                         # Vì các điểm quét đã nằm CHẮC CHẮN trên khuôn mặt và hai vai (nhờ Keypoint), 
                         # lấy trung vị 50% sẽ trả về chiều sâu chính xác của trung tâm cơ thể người, 
                         # bỏ qua chóp mũi nhô ra khiến tọa độ bị thu ngắn lại.
-                        d_m = float(body_distances[int(len(body_distances) * 0.50)])
+                        d_m = float(body_distances[int(len(body_distances) * 0.15)])
                     else:
                         d_m = get_depth_distance_m(depth_frame, (x1, y1, x2, y2), frame_w, frame_h, (person_center_x, person_center_y))
                     d_ngang_m = d_m
-                    
+                
                     is_raising = False
                     if keypoints is not None and i < len(keypoints):
                         kp = keypoints[i]
@@ -436,7 +475,7 @@ class VideoThread(QThread):
                             shoulder_y = min(kp[5][1].item(), kp[6][1].item())
                             if wrist_y < shoulder_y and wrist_y > 0:
                                 is_raising = True
-                    
+                
                     has_open_five = False
                     has_fist = False
                     for hx, hy, fingers, open5 in detected_hands:
@@ -453,7 +492,7 @@ class VideoThread(QThread):
                             count = self.open5_confirm_count.get(track_id, 0)
                             if count > 0: self.open5_confirm_count[track_id] = count - 1
                             else: self.hand_raise_start.pop(track_id, None)
-                        
+                    
                         if self.open5_confirm_count.get(track_id, 0) >= 2:
                             if track_id in self.hand_raise_start:
                                 hold_time = curr_time - self.hand_raise_start[track_id]
@@ -461,31 +500,31 @@ class VideoThread(QThread):
                                 if hold_time >= 2.0:
                                     self.hand_raise_start.pop(track_id, None)
                                     self.open5_confirm_count[track_id] = 0
-                                    
+                                
                                     self.locked_target_id = track_id
                                     self.locked_bbox = (x1, y1, x2, y2)
                                     self.robot_state = "COLLECTING"
                                     self.status_update_signal.emit(f"ĐÃ KHÓA ! Đang tải dữ liệu không gian...")
-                                    
+                                
                                     # Chuyển đổi tọa độ ngay lập tức và emit signal
                                     rel = get_person_relative_position_m(depth_frame, (person_center_x, person_center_y), frame_w, frame_h, self.depth_intrinsics, d_m)
                                     if rel is not None:
                                         camera_offset_x = 0.475
                                         forward_m, left_m = rel[0] - camera_offset_x, rel[1]
-                                        
+                                    
                                         print(f"\n{'='*60}")
                                         print(f"[DEBUG VISION] d_m = {d_m:.3f}m")
                                         print(f"[DEBUG VISION] rel = fwd:{rel[0]:.3f}, left:{rel[1]:.3f}")
                                         print(f"[DEBUG VISION] base_link = fwd:{forward_m:.3f}, left:{left_m:.3f}")
                                         print(f"{'='*60}")
-                                        
+                                    
                                         msg = PointStamped()
                                         msg.header.stamp = rospy.Time(0)
                                         msg.header.frame_id = "base_link"
                                         msg.point.x = forward_m
                                         msg.point.y = left_m
                                         msg.point.z = 0.0
-                                        
+                                    
                                         try:
                                             self.tf_listener.waitForTransform("/map", "base_link", rospy.Time(0), rospy.Duration(2.0))
                                             pt = self.tf_listener.transformPoint("/map", msg)
@@ -511,11 +550,11 @@ class VideoThread(QThread):
                             if ho_time >= 2.0:
                                 self.status_update_signal.emit("CANCEL_ALL")
                                 self.locked_target_id = None
-                                self.robot_state = "IDLE"
-                                
+                            self.robot_state = "IDLE"
+                            
                     is_too_close = (0 < d_ngang_m < 1.0)
                     is_invalid = (d_ngang_m <= 0.0 or d_ngang_m > 5.0)
-                    
+                
                     if self.locked_target_id is not None:
                         if track_id == self.locked_target_id:
                             cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 3)
@@ -763,7 +802,7 @@ class TestPCApp(QMainWindow):
             print(f"[SMART NAV] ↪️ Không gian TRÁI thoáng hơn (L={obs_left}, R={obs_right}).")
             
         # ÉP GÓC VỀ HỆ TỌA ĐỘ TOÀN CỤC CỦA MAP (45, 135, -45, -135)
-        # Giúp xe đỗ chéo đúng form bản đồ chứ không bị lệch lẻ do nhiễu hướng bàn
+        # Bắt các góc xéo 45 độ so với trục tòa nhà
         global_angles = [45, 135, -45, -135]
         theta_dock_deg = math.degrees(theta_dock_raw)
         best_angle = min(global_angles, key=lambda a: abs((a - theta_dock_deg + 180) % 360 - 180))
@@ -778,8 +817,11 @@ class TestPCApp(QMainWindow):
         yaw = theta_dock - math.pi 
         yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
         
-        # Footprint MiR có thêm 3cm đệm an toàn để MiR API không bắt lỗi 10110
+        # ĐƯA VỀ HÌNH CHỮ NHẬT THEO YÊU CẦU GIÁO SƯ
+        # Cộng thêm 3cm an toàn mỗi chiều
         fp_m = [(0.536, -0.35), (0.536, 0.35), (-0.484, 0.35), (-0.484, -0.35)]
+        
+        self.map_label.all_rejected_pts = []
         
         for step in range(min_step, max_ray_len): # Quét lùi dần ra xa
             cx = int(px_t + step * math.cos(theta_dock))
@@ -814,9 +856,20 @@ class TestPCApp(QMainWindow):
             cv2.fillPoly(mask, [local_pts], 255)
             
             # KIỂM TRA VA CHẠM: Nếu phép AND = 0 => Vùng Footprint HOÀN TOÀN TRỐNG!
-            if not np.any((roi > 0) & (mask > 0)): 
+            collision_pixels = (roi > 0) & (mask > 0)
+            if not np.any(collision_pixels): 
+                print(f"  ✅ [CHẤP NHẬN] Tại cự ly {step*res:.2f}m: Footprint hoàn toàn trống trải.")
                 target_step = step
                 break
+            else:
+                num_collisions = np.sum(collision_pixels)
+                print(f"  ❌ [TỪ CHỐI] Tại cự ly {step*res:.2f}m: Bị đè lên {num_collisions} pixel đen (vật cản/tường/bàn) trên bản đồ!")
+                self.map_label.last_rejected_pts = pts
+                
+                # Hiển thị và chạy cực chậm (10s 1 nhịp) theo yêu cầu giáo sư
+                self.map_label.update_view()
+                QApplication.processEvents()
+                time.sleep(3.0) # Tạm để 3s để giáo sư không phải đợi quá lâu
                 
         # NẾU TẤT CẢ ĐIỂM ĐỀU BỊ CHẶN: Vẫn chốt điểm sát nhất để hiển thị lên Map và ném cho MiR (MiR sẽ báo lỗi 10110 nhưng User sẽ thấy rõ trên Map)
         if target_step is None:

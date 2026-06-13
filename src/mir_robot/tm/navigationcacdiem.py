@@ -307,8 +307,10 @@ def api_navigate(headers, diem, ten_diem):
     # Di chuyển bình thường
     """
     Di chuyển robot bằng REST API.
-    Nếu vị trí bị obstacle, tự dịch nhẹ ±0.3m để tìm vị trí hợp lệ.
+    Nếu vị trí bị obstacle, tự dịch nhẹ để tìm vị trí hợp lệ.
     """
+    api_ensure_ready(headers) # Đánh thức xe nếu đang Pause (đèn tím)
+    
     status = api_status(headers)
     if not status:
         print("  Không đọc được status!")
@@ -327,21 +329,21 @@ def api_navigate(headers, diem, ten_diem):
         return False
     print(f"  Mission 'Move' found, param='{param_name}'")
 
-    # Tạo position và queue — nếu obstacle thì thử dịch nhẹ
-    offsets = [
-        (0, 0),           # Tọa độ gốc
-        (0.3, 0), (-0.3, 0), (0, 0.3), (0, -0.3),   # ±0.3m
-        (0.3, 0.3), (-0.3, 0.3), (0.3, -0.3), (-0.3, -0.3),  # chéo
-        (0.5, 0), (-0.5, 0), (0, 0.5), (0, -0.5),   # ±0.5m
-    ]
+    # Tạo position và queue — nếu obstacle thì thử điểm tiếp theo trong danh sách ứng viên
+    if isinstance(diem, list):
+        candidates_to_try = diem
+    else:
+        candidates_to_try = [diem]
 
-    for dx, dy in offsets:
-        x = diem["x"] + dx
-        y = diem["y"] + dy
-        suffix = f"" if dx == 0 and dy == 0 else f" (offset {dx:+.1f},{dy:+.1f})"
+    for c_diem in candidates_to_try:
+        x = c_diem["x"]
+        y = c_diem["y"]
+        dist_m = c_diem.get("dist_m", "N/A")
+        
+        suffix = f" (cự ly {dist_m}m)" if dist_m != "N/A" else ""
 
         pos_name = f"_nav_{ten_diem}_{int(time.time())}"
-        orientation = quat_to_deg(diem["qz"], diem["qw"])
+        orientation = quat_to_deg(c_diem["qz"], c_diem["qw"])
 
         r = requests.post(f"{API_URL}/positions", headers=headers, json={
             "name": pos_name,
@@ -413,8 +415,6 @@ def api_navigate(headers, diem, ten_diem):
                 return False
 
         # Đang executing hoặc ready — thành công!
-        if dx != 0 or dy != 0:
-            print(f"  ✓ Dùng offset ({dx:+.1f},{dy:+.1f}) thay vì tọa độ gốc")
         return True
 
     print("  ❌ Tất cả vị trí đều bị obstacle!")

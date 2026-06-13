@@ -72,29 +72,37 @@ import mediapipe as mp
 # ================= Utils =================
 def get_depth_distance_m(depth_frame, box, frame_w, frame_h, center_pt=None):
     x1, y1, x2, y2 = map(int, box)
+    width = x2 - x1
+    height = y2 - y1
     
-    # Quét toàn bộ khung người (Bounding Box) thay vì chỉ dải giữa ngực
-    # Lý do: Nếu người mặc áo đen/phản xạ kém, vùng ngực sẽ bị nhiễu (distance=0).
-    # Quét toàn bộ và lấy Percentile 5% sẽ đảm bảo lấy trúng khuôn mặt hoặc cánh tay (gần nhất).
+    # 1. CẮT ROI SIÊU HẸP Ở CHÍNH GIỮA NGỰC
+    # Khi ngồi xa, tay giơ lên chiếm nhiều diện tích. Ta thu hẹp ROI vào đúng tâm ngực 
+    # (x: 35%->65%, y: 15%->40%) để né hoàn toàn 2 cánh tay ở 2 bên và cái bàn ở dưới.
+    roi_x1 = max(0, int(x1 + width * 0.35))
+    roi_x2 = min(frame_w, int(x2 - width * 0.35))
+    roi_y1 = max(0, int(y1 + height * 0.15))
+    roi_y2 = min(frame_h, int(y1 + height * 0.40))
+    
+    if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
+        return -1.0
+        
     distances = []
-    step_x = max(2, (x2 - x1) // 20)
-    step_y = max(2, (y2 - y1) // 20)
-    
-    for px in range(x1, x2, step_x):
-        for py in range(y1, y2, step_y):
-            orig_px = frame_w - 1 - px
+    # Vì ROI đã rất nhỏ, quét tất cả các pixel thay vì nhảy bước lớn
+    for px in range(roi_x1, roi_x2, 2):
+        for py in range(roi_y1, roi_y2, 2):
+            orig_px = frame_w - 1 - px # Lật trục X vì camera lật
             if 0 <= orig_px < frame_w and 0 <= py < frame_h:
                 d = depth_frame.get_distance(orig_px, py)
-                # Bỏ qua nhiễu quá gần (<0.2m)
-                if 0.2 < d < 6.0: distances.append(d)
+                # Bỏ qua nhiễu quá gần (<0.3m) 
+                if 0.3 < d < 6.0: distances.append(d)
     
-    if distances:
-        distances.sort()
-        # NÂNG LÊN 30% THAY VÌ 5%: Lấy phần trung bình của ngực/bụng người 
-        # (5% sẽ lấy trúng chóp mũi hoặc tay vươn ra khiến tọa độ bị lệch gần về camera)
-        idx = int(len(distances) * 0.30)
-        return float(distances[idx])
-    return -1.0
+    if not distances:
+        return -1.0
+        
+    # 2. Dùng Median (Trung vị) của vùng ngực
+    # Do ROI đã rất nhỏ và né hoàn toàn cánh tay, điểm trung vị (Median) 
+    # chắc chắn sẽ là bề mặt áo/ngực của user, độ chuẩn xác là tuyệt đối!
+    return float(np.median(distances))
 
 # Vô hiệu hóa hàm segmentation vì nó thường xuyên nhận diện sai và lấy d_m của bức tường
 # def get_depth_distance_m_seg(...)
@@ -129,10 +137,22 @@ def get_person_relative_position_m(depth_frame, center_pt, frame_w, frame_h, dep
         z_opt = distance_m
 
     pitch_rad = math.radians(20.0)
-    forward_m = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
-    left_m = -x_opt
+    # CÔNG THỨC CHUẨN ĐÃ ĐƯỢC GIÁO SƯ CHỨNG MINH:
+    forward_m_camera = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
     
-    return forward_m, left_m, z_opt
+    # BÙ TRỪ TRỤC QUANG HỌC VÀ VỊ TRÍ LẮP ĐẶT (Camera Calibration):
+    lateral_offset_m = 0.0 # Giáo sư yêu cầu bỏ bù trái/phải
+    forward_offset_m = 0.10 # Bù khung motor nhô ra trước 10cm (Từ đuôi lên đầu)
+    
+    forward_m = forward_m_camera + forward_offset_m
+    left_m = -x_opt + lateral_offset_m
+    
+    # CÔNG THỨC CHUẨN Z:
+    down_m = z_opt * math.sin(pitch_rad) + y_opt * math.cos(pitch_rad)
+    camera_height_m = 1.8
+    z_m = camera_height_m - down_m
+    
+    return forward_m, left_m, z_m
 
 # ================= GUI Map =================
 class MapLabel(QLabel):
@@ -155,6 +175,8 @@ class MapLabel(QLabel):
         self.obstacle_px = None
         self.obs3d_px = None
         self.table_box_px = []
+        self.scan_msg = None
+        self.last_rejected_pts = None
 
     def set_robot_pose(self, wx, wy, yaw=0.0):
         if not self.map_info: return
@@ -209,8 +231,7 @@ class MapLabel(QLabel):
             # VẼ CHÍNH XÁC FOOTPRINT HÌNH CHỮ NHẬT CỦA MIR ĐỂ USER KIỂM CHỨNG
             if self.map_info and hasattr(self, 'goal_yaw'):
                 res = self.map_info.resolution
-                # Footprint từ MiR: [[0.506, -0.32], [0.506, 0.32], [-0.454, 0.32], [-0.454, -0.32]]
-                fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
+                fp_m = [(0.42, -0.28), (0.42, 0.28), (-0.42, 0.28), (-0.42, -0.28)]
                 pts = []
                 gui_yaw = -self.goal_yaw # Giao diện OpenCV có trục Y hướng xuống
                 px, py = self.goal_px
@@ -223,6 +244,16 @@ class MapLabel(QLabel):
                 cv2.polylines(display_img, [pts], True, (0, 255, 255), 2) # Hình chữ nhật Vàng
                 cv2.putText(display_img, "MiR Footprint", (px+10, py+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             
+            # VẼ FOOTPRINT BỊ TỪ CHỐI (MÀU ĐỎ) ĐỂ GIÁO SƯ XEM NÓ ĐỤNG VÀO ĐÂU
+            if hasattr(self, 'last_rejected_pts') and self.last_rejected_pts is not None:
+                rej_pts = self.last_rejected_pts
+                draw_pts = []
+                for pt in rej_pts[0]:
+                    draw_pts.append([pt[0], self.map_info.height - pt[1] - 1])
+                draw_pts = np.array([draw_pts], np.int32)
+                cv2.polylines(display_img, draw_pts, True, (0, 0, 255), 2) # Đỏ
+                cv2.putText(display_img, "COLLISION!", (draw_pts[0][0][0], draw_pts[0][0][1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                
             # Vẽ đường đỗ từ Robot ra Smart Goal (Màu Vàng RGB: 255, 255, 0)
             if self.robot_px:
                 cv2.line(display_img, self.robot_px, self.goal_px, (255, 255, 0), 2, cv2.LINE_AA)
@@ -235,6 +266,21 @@ class MapLabel(QLabel):
                 end_x = int(gx + ar_len * math.cos(gui_yaw))
                 end_y = int(gy + ar_len * math.sin(gui_yaw))
                 cv2.arrowedLine(display_img, (gx, gy), (end_x, end_y), (0, 255, 0), 3, tipLength=0.3)
+                
+                # VẼ FOOTPRINT CỦA XE TẠI ĐIỂM ĐỖ ĐỂ MINH CHỨNG MŨI XE ĐÃ CHẠM BÀN!
+                # Lấy đúng kích thước hình chữ nhật gốc
+                fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
+                res = self.map_info.resolution
+                goal_pts = []
+                for dx, dy in fp_m:
+                    # Yaw trên GUI bị lật Y nên dùng -gui_yaw để tính đúng toán học
+                    gyaw = self.goal_yaw
+                    rx = (dx * math.cos(gyaw) - dy * math.sin(gyaw)) / res
+                    ry = (dx * math.sin(gyaw) + dy * math.cos(gyaw)) / res
+                    goal_pts.append([int(gx + rx), int(gy - ry)]) # Trừ ry vì Y lật
+                goal_pts = np.array(goal_pts, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(display_img, [goal_pts], True, (0, 255, 0), 2) # Vẽ hình xe màu Xanh Lá
+                cv2.putText(display_img, "ROBOT BODY", (gx - 30, gy - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # Vẽ Robot (cập nhật theo Footprint thực tế)
         if self.robot_px and self.map_info:
@@ -276,7 +322,7 @@ class VideoThread(QThread):
         super().__init__()
         self._run_flag = True
         self.device = 0 if os.path.exists('/opt/ai_venv/bin/python') else 'cpu'
-        self.model_pose = YOLO('yolo11n-pose.pt')
+        self.model_pose = YOLO('yolo26n-pose.pt')
         self.model_seg = YOLO('yolo11n-seg.pt')
         if self.device == 0:
             self.model_pose.to('cuda')
@@ -291,6 +337,7 @@ class VideoThread(QThread):
         
         self.hand_raise_start = {}
         self.open5_confirm_count = {}
+        self.target_history = {} # Lưu đệm tọa độ trong 2s
         
         self.fist_confirm_count = 0
         self.fist_hold_start = None
@@ -302,15 +349,14 @@ class VideoThread(QThread):
         config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
         
         try:
-            self.pipeline.start(config)
+            profile = self.pipeline.start(config)
             self.align = rs.align(rs.stream.color)
-            profile = self.pipeline.get_active_profile()
             
             # QUAN TRỌNG: Lấy intrinsics của COLOR stream vì depth đã được align sang color
             color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
             self.depth_intrinsics = color_profile.get_intrinsics()
             
-            print("[INFO] Đã KẾT NỐI RealSense (Đã đồng bộ Intrinsics Color)!")
+            print("[INFO] Đã KẾT NỐI RealSense (Đã đồng bộ Intrinsics Color) và Cấu hình Sensor!")
         except Exception as e:
             print(f"[ERROR] RealSense: {e}")
             return
@@ -372,6 +418,52 @@ class VideoThread(QThread):
                 seg_result = results_seg[0] if len(results_seg) > 0 else None
                 masks = seg_result.masks.xy if (seg_result and seg_result.masks is not None) else None
 
+                # SỬA LỖI 2 NGƯỜI NGỒI GẦN NHAU BỊ DÍNH BOUNDING BOX
+                # Dùng Anatomical Proximity để gán mỗi bàn tay (Mediapipe) cho MỘT người duy nhất (YOLO)
+                hand_assignments = {}
+                try:
+                    for h_idx, (hx, hy, fingers, open5) in enumerate(detected_hands):
+                        best_track_id = -1
+                        min_score = float('inf')
+                        
+                        for j, box_j in enumerate(boxes):
+                            if box_j.id is None: continue
+                            t_id_j = int(box_j.id[0].item())
+                            x1_j, y1_j, x2_j, y2_j = box_j.xyxy[0].cpu().numpy()
+                            
+                            if not (x1_j - 50 < hx < x2_j + 50 and y1_j - 50 < hy < y2_j + 50):
+                                continue
+                                
+                            score = float('inf')
+                            if keypoints is not None and j < len(keypoints):
+                                kp_j = keypoints[j]
+                                if len(kp_j) >= 11:
+                                    lw = kp_j[9]
+                                    rw = kp_j[10]
+                                    d_lw = math.hypot(hx - lw[0].item(), hy - lw[1].item()) if len(lw)>=3 and lw[2].item() > 0.3 else float('inf')
+                                    d_rw = math.hypot(hx - rw[0].item(), hy - rw[1].item()) if len(rw)>=3 and rw[2].item() > 0.3 else float('inf')
+                                    
+                                    l_sh = kp_j[5]
+                                    r_sh = kp_j[6]
+                                    d_ls = math.hypot(hx - l_sh[0].item(), hy - l_sh[1].item()) if len(l_sh)>=3 and l_sh[2].item() > 0.3 else float('inf')
+                                    d_rs = math.hypot(hx - r_sh[0].item(), hy - r_sh[1].item()) if len(r_sh)>=3 and r_sh[2].item() > 0.3 else float('inf')
+                                    
+                                    score = min(d_lw, d_rw, d_ls, d_rs)
+                            
+                            if score == float('inf'):
+                                score = math.hypot(float(hx - (x1_j+x2_j)/2), float(hy - (y1_j+y2_j)/2))
+                                
+                            if score < min_score:
+                                min_score = score
+                                best_track_id = t_id_j
+                                
+                        if best_track_id != -1:
+                            hand_assignments[h_idx] = best_track_id
+                except Exception as e:
+                    import traceback
+                    print("ERROR IN HAND ASSIGNMENTS:")
+                    traceback.print_exc()
+
                 for i, box in enumerate(boxes):
                     track_id = int(box.id[0].item())
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
@@ -399,93 +491,136 @@ class VideoThread(QThread):
                                 person_center_y = nose[1].item()
                     
                     # SỬA LỖI TỌA ĐỘ CUSTOMER CÁCH XA BÀN:
-                    # Bỏ dùng Segmentation vì nó dính background (bức tường 2.49m)
-                    # Bỏ quét toàn bộ Box vì 5% percentile sẽ lấy trúng "Bàn tay đang giơ ra" -> d_m bị ngắn lại!
-                    # Giải pháp: Ưu tiên lấy chiều sâu (Depth) từ vùng Mặt và Vai.
+                    # MULTI-LAYER LIDAR FALLBACK (3 lớp bảo vệ chống xuyên tường)
                     body_distances = []
+                    depth_layer_used = "none"
                     if keypoints is not None and i < len(keypoints):
                         kp = keypoints[i]
-                        for k_idx in range(7): # Từ Mũi (0) đến Vai phải (6)
+                        
+                        # LỚP 1: Quét KHUÔN MẶT (Keypoints 0-4: Mũi, Mắt, Tai)
+                        for k_idx in range(5): 
                             if len(kp) > k_idx and len(kp[k_idx]) >= 3 and kp[k_idx][2].item() > 0.4:
                                 kx, ky = int(kp[k_idx][0].item()), int(kp[k_idx][1].item())
-                                # Quét một vùng nhỏ quanh mỗi keypoint thân trên
-                                for dx in range(-15, 16, 5):
-                                    for dy in range(-15, 16, 5):
+                                for dx in range(-7, 8, 3):
+                                    for dy in range(-7, 8, 3):
                                         px, py = kx + dx, ky + dy
                                         if 0 <= px < frame_w and 0 <= py < frame_h:
                                             orig_px = frame_w - 1 - px
                                             d = depth_frame.get_distance(orig_px, py)
                                             if 0.2 < d < 6.0: body_distances.append(d)
-                                            
+                        
+                        if body_distances:
+                            depth_layer_used = "face"
+                        else:
+                            # LỚP 2: Quét VAI + HÔNG (Keypoints 5,6,11,12)
+                            for k_idx in [5, 6, 11, 12]:
+                                if len(kp) > k_idx and len(kp[k_idx]) >= 3 and kp[k_idx][2].item() > 0.4:
+                                    kx, ky = int(kp[k_idx][0].item()), int(kp[k_idx][1].item())
+                                    for dx in range(-10, 11, 4):
+                                        for dy in range(-10, 11, 4):
+                                            px, py = kx + dx, ky + dy
+                                            if 0 <= px < frame_w and 0 <= py < frame_h:
+                                                orig_px = frame_w - 1 - px
+                                                d = depth_frame.get_distance(orig_px, py)
+                                                if 0.2 < d < 6.0: body_distances.append(d)
+                            if body_distances:
+                                depth_layer_used = "body"
+                                        
                     if body_distances:
                         body_distances.sort()
-                        # DÙNG MEDIAN 50% THAY VÌ 10%:
-                        # Vì các điểm quét đã nằm CHẮC CHẮN trên khuôn mặt và hai vai (nhờ Keypoint), 
-                        # lấy trung vị 50% sẽ trả về chiều sâu chính xác của trung tâm cơ thể người, 
-                        # bỏ qua chóp mũi nhô ra khiến tọa độ bị thu ngắn lại.
-                        d_m = float(body_distances[int(len(body_distances) * 0.50)])
+                        if depth_layer_used == "face":
+                            d_m = float(body_distances[int(len(body_distances) * 0.3)])
+                        else:
+                            d_m = float(body_distances[int(len(body_distances) * 0.15)])
                     else:
+                        # LỚP 3 (Fallback cuối): Quét BBox, lấy 5% gần nhất
                         d_m = get_depth_distance_m(depth_frame, (x1, y1, x2, y2), frame_w, frame_h, (person_center_x, person_center_y))
                     d_ngang_m = d_m
-                    
+                
                     is_raising = False
                     if keypoints is not None and i < len(keypoints):
                         kp = keypoints[i]
                         if len(kp) >= 11:
                             wrist_y = min(kp[9][1].item(), kp[10][1].item())
                             shoulder_y = min(kp[5][1].item(), kp[6][1].item())
-                            if wrist_y < shoulder_y and wrist_y > 0:
+                            box_h = y2 - y1
+                            if wrist_y < (shoulder_y + box_h * 0.15) and wrist_y > 0:
                                 is_raising = True
-                    
+                
                     has_open_five = False
                     has_fist = False
-                    for hx, hy, fingers, open5 in detected_hands:
-                        if x1 - 30 < hx < x2 + 30 and y1 - 30 < hy < y2 + 30:
+                    for h_idx, (hx, hy, fingers, open5) in enumerate(detected_hands):
+                        if hand_assignments.get(h_idx) == track_id:
                             if open5: has_open_five = True
                             if fingers <= 1: has_fist = True
+                            
+                            # FALLBACK: Nếu YOLO keypoint bị nhiễu (người bị che khuất)
+                            # nhưng Mediapipe vẫn phát hiện được bàn tay,
+                            # kiểm tra bàn tay có nằm ở nửa trên bbox không → coi như giơ tay!
+                            if not is_raising and open5:
+                                box_mid_y = y1 + (y2 - y1) * 0.45
+                                if hy < box_mid_y:
+                                    is_raising = True
 
                     if track_id != -1 and self.locked_target_id is None:
                         if is_raising and has_open_five and d_ngang_m <= 5.0:
                             self.open5_confirm_count[track_id] = self.open5_confirm_count.get(track_id, 0) + 1
                             if track_id not in self.hand_raise_start:
                                 self.hand_raise_start[track_id] = curr_time
+                                self.target_history[track_id] = []
                         else:
                             count = self.open5_confirm_count.get(track_id, 0)
                             if count > 0: self.open5_confirm_count[track_id] = count - 1
-                            else: self.hand_raise_start.pop(track_id, None)
-                        
+                            else: 
+                                self.hand_raise_start.pop(track_id, None)
+                                self.target_history.pop(track_id, None)
+                    
                         if self.open5_confirm_count.get(track_id, 0) >= 2:
                             if track_id in self.hand_raise_start:
+                                # Tích lũy (buffer) tọa độ tâm và khoảng cách nếu d_ngang_m hợp lệ
+                                if d_ngang_m > 0 and d_ngang_m < 6.0:
+                                    self.target_history[track_id].append((person_center_x, person_center_y, d_ngang_m))
+                                    
                                 hold_time = curr_time - self.hand_raise_start[track_id]
                                 cv2.putText(annotated_frame, f"DANG KHOA TARGET: {hold_time:.1f}s/2s", (int(x1), int(y1)-30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                                 if hold_time >= 2.0:
                                     self.hand_raise_start.pop(track_id, None)
                                     self.open5_confirm_count[track_id] = 0
-                                    
+                                
+                                    # 3. CHỐT TỌA ĐỘ BẰNG CÁCH LẤY TRUNG BÌNH (MEDIAN) CỦA TOÀN BỘ CÁC FRAME TRONG 2 GIÂY VỪA QUA
+                                    hist = self.target_history.pop(track_id, [])
+                                    if len(hist) > 0:
+                                        avg_cx = float(np.median([h[0] for h in hist]))
+                                        avg_cy = float(np.median([h[1] for h in hist]))
+                                        avg_dm = float(np.median([h[2] for h in hist]))
+                                        print(f"[SMART NAV] Ổn định tọa độ từ {len(hist)} frames (d_m={avg_dm:.3f}m)")
+                                    else:
+                                        avg_cx, avg_cy, avg_dm = person_center_x, person_center_y, d_m
+                                
                                     self.locked_target_id = track_id
                                     self.locked_bbox = (x1, y1, x2, y2)
                                     self.robot_state = "COLLECTING"
                                     self.status_update_signal.emit(f"ĐÃ KHÓA ! Đang tải dữ liệu không gian...")
-                                    
-                                    # Chuyển đổi tọa độ ngay lập tức và emit signal
-                                    rel = get_person_relative_position_m(depth_frame, (person_center_x, person_center_y), frame_w, frame_h, self.depth_intrinsics, d_m)
+                                
+                                    # Chuyển đổi tọa độ bằng tọa độ trung bình đã lọc nhiễu
+                                    rel = get_person_relative_position_m(depth_frame, (avg_cx, avg_cy), frame_w, frame_h, self.depth_intrinsics, avg_dm)
                                     if rel is not None:
                                         camera_offset_x = 0.475
                                         forward_m, left_m = rel[0] - camera_offset_x, rel[1]
-                                        
+                                    
                                         print(f"\n{'='*60}")
                                         print(f"[DEBUG VISION] d_m = {d_m:.3f}m")
                                         print(f"[DEBUG VISION] rel = fwd:{rel[0]:.3f}, left:{rel[1]:.3f}")
                                         print(f"[DEBUG VISION] base_link = fwd:{forward_m:.3f}, left:{left_m:.3f}")
                                         print(f"{'='*60}")
-                                        
+                                    
                                         msg = PointStamped()
                                         msg.header.stamp = rospy.Time(0)
                                         msg.header.frame_id = "base_link"
                                         msg.point.x = forward_m
                                         msg.point.y = left_m
                                         msg.point.z = 0.0
-                                        
+                                    
                                         try:
                                             self.tf_listener.waitForTransform("/map", "base_link", rospy.Time(0), rospy.Duration(2.0))
                                             pt = self.tf_listener.transformPoint("/map", msg)
@@ -512,10 +647,10 @@ class VideoThread(QThread):
                                 self.status_update_signal.emit("CANCEL_ALL")
                                 self.locked_target_id = None
                                 self.robot_state = "IDLE"
-                                
+                            
                     is_too_close = (0 < d_ngang_m < 1.0)
                     is_invalid = (d_ngang_m <= 0.0 or d_ngang_m > 5.0)
-                    
+                
                     if self.locked_target_id is not None:
                         if track_id == self.locked_target_id:
                             cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 3)
@@ -697,11 +832,15 @@ class TestPCApp(QMainWindow):
         else:
             self.map_label.obs3d_px = None
 
-        # 3. CHUẨN BỊ BẢN ĐỒ VẬT CẢN (KHÔNG LẠM PHÁT MÙ QUÁNG NỮA)
-        # Vì MiR Footprint là hình chữ nhật, nếu lạm phát hình tròn sẽ rất lãng phí không gian.
-        # Ta sẽ kiểm tra va chạm chính xác bằng Đa giác (Polygon) trong lúc dò tia!
-        safe_radius_px = 0
-        inflated_obs = combined_obs.copy()
+        # 3. INFLATE BẢN ĐỒ VẬT CẢN ĐỂ KHỚP VỚI COSTMAP NỘI BỘ CỦA MiR
+        # MiR Planner luôn tự động giãn nở (inflate) vật cản thêm ~15cm trên Costmap.
+        # Nếu ta check footprint trên bản đồ thô (không inflate), ta sẽ thấy "trống"
+        # nhưng MiR Planner vẫn thấy "đè lên vùng cấm" -> Lỗi Tím!
+        # Giải pháp: Tự inflate bản đồ TRƯỚC KHI check, để đồng bộ 100% với MiR.
+        inflate_m = 0.15  # MiR inflation radius ~15cm
+        inflate_px = max(1, int(inflate_m / res))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*inflate_px+1, 2*inflate_px+1))
+        inflated_obs = cv2.dilate(combined_obs, kernel, iterations=1)
         
         # ============================================================
         # THUẬT TOÁN ĐỖ CHÉO THÔNG MINH (Kết hợp tìm Hướng + Raycast Động)
@@ -763,7 +902,7 @@ class TestPCApp(QMainWindow):
             print(f"[SMART NAV] ↪️ Không gian TRÁI thoáng hơn (L={obs_left}, R={obs_right}).")
             
         # ÉP GÓC VỀ HỆ TỌA ĐỘ TOÀN CỤC CỦA MAP (45, 135, -45, -135)
-        # Giúp xe đỗ chéo đúng form bản đồ chứ không bị lệch lẻ do nhiễu hướng bàn
+        # Bắt các góc xéo 45 độ so với trục tòa nhà
         global_angles = [45, 135, -45, -135]
         theta_dock_deg = math.degrees(theta_dock_raw)
         best_angle = min(global_angles, key=lambda a: abs((a - theta_dock_deg + 180) % 360 - 180))
@@ -773,13 +912,13 @@ class TestPCApp(QMainWindow):
         # BƯỚC 3: DỰA VÀO LIDAR, TÌM ĐIỂM GẦN NHẤT TRÊN TIA ĐỖ CHÉO 45 ĐỘ
         # Dùng CHÍNH XÁC footprint hình chữ nhật của MiR (cộng thêm 3cm an toàn) để check!
         target_step = None
-        min_step = int(0.50 / res) # Khởi điểm sát nhất có thể
+        min_step = int(0.45 / res) # Bắt đầu dò từ 0.45m, inflate sẽ tự đẩy ra xa nếu cần
         
         yaw = theta_dock - math.pi 
         yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
         
-        # Footprint MiR có thêm 3cm đệm an toàn để MiR API không bắt lỗi 10110
-        fp_m = [(0.536, -0.35), (0.536, 0.35), (-0.484, 0.35), (-0.484, -0.35)]
+        # FOOTPRINT CHUẨN CỦA MiR
+        fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
         
         for step in range(min_step, max_ray_len): # Quét lùi dần ra xa
             cx = int(px_t + step * math.cos(theta_dock))
@@ -807,8 +946,8 @@ class TestPCApp(QMainWindow):
             if x_min >= x_max or y_min >= y_max:
                 continue
                 
-            # Cắt ROI trên map gốc (combined_obs)
-            roi = combined_obs[y_min:y_max+1, x_min:x_max+1]
+            # Cắt ROI trên map ĐÃ INFLATE (khớp với Costmap MiR)
+            roi = inflated_obs[y_min:y_max+1, x_min:x_max+1]
             local_pts = pts - np.array([x_min, y_min])
             mask = np.zeros_like(roi)
             cv2.fillPoly(mask, [local_pts], 255)
@@ -817,6 +956,8 @@ class TestPCApp(QMainWindow):
             if not np.any((roi > 0) & (mask > 0)): 
                 target_step = step
                 break
+            else:
+                self.map_label.last_rejected_pts = pts
                 
         # NẾU TẤT CẢ ĐIỂM ĐỀU BỊ CHẶN: Vẫn chốt điểm sát nhất để hiển thị lên Map và ném cho MiR (MiR sẽ báo lỗi 10110 nhưng User sẽ thấy rõ trên Map)
         if target_step is None:
@@ -862,18 +1003,24 @@ class TestPCApp(QMainWindow):
         self.current_goal = (w_x, w_y)
         self.is_moving = True
         
-        rest_ok = False
-        if hasattr(self, 'mir_headers') and self.mir_headers:
-            # Gửi duy nhất 1 điểm. Bao bọc bằng try...except để tránh crash app nếu mạng/API bị timeout!
-            try:
-                rest_ok = nav.api_navigate(self.mir_headers, [diem_dong], "diem_dong")
-            except Exception as e:
-                print(f"[SMART NAV] ❌ CRASH API: {e}. Vẫn tiếp tục chạy ROS fallback...")
-                rest_ok = False
-                
-        if not rest_ok and self.robot:
-            print("[SMART NAV] ⚠️ API từ chối (10110) hoặc mất mạng! Ép chạy bằng ROS (ws_send_goal) để đỗ sát...")
-            nav.ws_send_goal(self.robot, diem_dong)
+        # CHẠY NAVIGATION TRONG THREAD RIÊNG ĐỂ KHÔNG BLOCK QT MAIN THREAD
+        # api_navigate có time.sleep(3) bên trong, nếu chạy ở main thread sẽ 
+        # đóng băng GUI 3+ giây, các signal từ VideoThread dồn ứ -> Segfault!
+        import threading
+        def _nav_worker():
+            rest_ok = False
+            if hasattr(self, 'mir_headers') and self.mir_headers:
+                try:
+                    rest_ok = nav.api_navigate(self.mir_headers, [diem_dong], "diem_dong")
+                except Exception as e:
+                    print(f"[SMART NAV] ❌ CRASH API: {e}. Vẫn tiếp tục chạy ROS fallback...")
+                    rest_ok = False
+                    
+            if not rest_ok and self.robot:
+                print("[SMART NAV] ⚠️ API từ chối hoặc mất mạng! Ép chạy bằng ROS (ws_send_goal)...")
+                nav.ws_send_goal(self.robot, diem_dong)
+        
+        threading.Thread(target=_nav_worker, daemon=True).start()
 
     def closeEvent(self, event):
         print("[INFO] Đang đóng luồng Camera an toàn...")

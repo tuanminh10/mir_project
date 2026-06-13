@@ -1,0 +1,96 @@
+--- /home/tuanminh/mir_project/src/mir_robot/tm/test3.py	2026-06-12 12:40:08.398209977 +0700
++++ /home/tuanminh/mir_project/src/mir_robot/tm/test4.py	2026-06-12 14:22:42.692684362 +0700
+@@ -7,6 +7,8 @@
+ import math
+ import time
+ import threading
++import faulthandler
++faulthandler.enable()
+ 
+ # ==============================================================================
+ # HACK HỖ TRỢ GPU RTX 5060 TRÊN ROS NOETIC (PYTHON 3.8)
+@@ -580,6 +582,8 @@
+ 
+             cv2.putText(annotated_frame, f"STATE: {self.robot_state}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255) if self.robot_state != "IDLE" else (0,255,0), 2)
+             self.change_pixmap_signal.emit(annotated_frame)
++            if self.robot_state == "MOVING":
++                import time; time.sleep(0.1) # Tốc độ 10 FPS để không làm nghẽn EventLoop của Qt
+             
+         self.pipeline.stop()
+ 
+@@ -748,31 +752,16 @@
+         self.map_label.cone_pixels = []
+         self.map_label.ray_pixels = []
+         
+-        # BƯỚC 1: TÌM HƯỚNG BÀN (Dựa trên vật cản thực tế combined_obs)
+-        table_rays = []
+-        max_ray_len = int(3.0 / res)
+-        for deg in range(0, 360, 5):
+-            rad = math.radians(deg)
+-            for step in range(1, max_ray_len):
+-                cx = int(px_t + step * math.cos(rad))
+-                cy = int(py_t + step * math.sin(rad))
+-                if not (0 <= cx < w and 0 <= cy < h): break
+-                if combined_obs[cy, cx] > 0: # Tìm thấy mặt bàn/vật cản
+-                    table_rays.append((rad, step))
+-                    break
+-        
+-        if table_rays:
+-            min_d = min(d for _, d in table_rays)
+-            close_rays = [r for r, d in table_rays if d <= min_d + 3]
+-            sx = sum(math.cos(r) for r in close_rays)
+-            sy = sum(math.sin(r) for r in close_rays)
+-            theta_table = math.atan2(sy, sx)
++        # BƯỚC 1: LẤY HƯỚNG TỪ CUSTOMER VỀ ROBOT LÀM HƯỚNG MỞ ĐƯỜNG CHÍNH
++        # Khắc phục lỗi "đâm sâu vào lòng bàn": Tia đỗ bắt buộc phải hướng về phía Robot (không gian mở)
++        # thay vì dò dẫm mặt bàn và bị đánh lừa bởi vật cản 3D hoặc tường.
++        if hasattr(self, 'robot_pose') and self.robot_pose is not None:
++            rx, ry, _ = self.robot_pose
++            theta_back = math.atan2(ry - target_y, rx - target_x)
+         else:
+-            # Nếu không thấy bàn, lấy hướng từ robot đến khách làm chuẩn
+-            theta_table = math.atan2(py_r - py_t, px_r - px_t) + math.pi
++            theta_back = 0
+             
+-        theta_back = theta_table + math.pi # Hướng đối diện bàn (khoảng trống sau lưng khách)
+-        print(f"[SMART NAV] Hướng bàn: {math.degrees(theta_table):.0f}°, Hướng sau lưng: {math.degrees(theta_back):.0f}°")
++        print(f"[SMART NAV] Hướng từ Khách về Robot (Hướng mở): {math.degrees(theta_back):.0f}°")
+             
+         # BƯỚC 2: QUÉT KHÔNG GIAN BÊN TRÁI VÀ PHẢI SAU LƯNG ĐỂ XEM BÊN NÀO THOÁNG HƠN
+         obs_left = 0
+@@ -807,6 +796,7 @@
+         best_angle = min(global_angles, key=lambda a: abs((a - theta_dock_deg + 180) % 360 - 180))
+         theta_dock = math.radians(best_angle)
+         print(f"[SMART NAV] 🌐 Ép góc đỗ chuẩn theo hệ tọa độ Map: {best_angle}°")
++        import sys; sys.stdout.flush()
+             
+         # BƯỚC 3: DỰA VÀO LIDAR, TÌM ĐIỂM GẦN NHẤT TRÊN TIA ĐỖ CHÉO 45 ĐỘ
+         # Dùng CHÍNH XÁC footprint hình chữ nhật của MiR (cộng thêm 3cm an toàn) để check!
+@@ -848,12 +838,11 @@
+                 
+             # Cắt ROI trên map gốc (combined_obs)
+             roi = combined_obs[y_min:y_max+1, x_min:x_max+1]
+-            local_pts = pts - np.array([x_min, y_min])
+-            mask = np.zeros_like(roi)
+-            cv2.fillPoly(mask, [local_pts], 255)
+-            
+-            # KIỂM TRA VA CHẠM: Nếu phép AND = 0 => Vùng Footprint HOÀN TOÀN TRỐNG!
+-            if not np.any((roi > 0) & (mask > 0)): 
++            # KIỂM TRA VA CHẠM: Bỏ qua hoàn toàn OpenCV, chỉ dùng ROI (bounding box) Numpy
++            collision_pixels = roi > 0
++            if not np.any(collision_pixels): 
++                print(f"  ✅ [CHẤP NHẬN] Tại cự ly {step*res:.2f}m: Footprint hoàn toàn trống trải.")
++                import sys; sys.stdout.flush()
+                 target_step = step
+                 break
+             else:
+@@ -861,6 +850,9 @@
+                 
+         # NẾU TẤT CẢ ĐIỂM ĐỀU BỊ CHẶN: Vẫn chốt điểm sát nhất để hiển thị lên Map và ném cho MiR (MiR sẽ báo lỗi 10110 nhưng User sẽ thấy rõ trên Map)
+         if target_step is None:
++            num_collisions = np.sum(collision_pixels)
++            print(f"  ❌ [TỪ CHỐI] Tại cự ly {step*res:.2f}m: Bị đè lên {num_collisions} pixel đen (vật cản/tường/bàn) trên bản đồ!")
++            import sys; sys.stdout.flush()
+             print("[SMART NAV] ❌ CẢNH BÁO: Không có điểm nào an toàn (Footprint liếm vào vật cản). Vẫn cố gắng hiển thị và thử đỗ!")
+             target_step = min_step
+             

@@ -132,7 +132,11 @@ def get_person_relative_position_m(depth_frame, center_pt, frame_w, frame_h, dep
     forward_m = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
     left_m = -x_opt
     
-    return forward_m, left_m, z_opt
+    down_m = z_opt * math.sin(pitch_rad) + y_opt * math.cos(pitch_rad)
+    camera_height_m = 1.8
+    z_m = camera_height_m - down_m
+    
+    return forward_m, left_m, z_m
 
 # ================= GUI Map =================
 class MapLabel(QLabel):
@@ -778,8 +782,8 @@ class TestPCApp(QMainWindow):
         yaw = theta_dock - math.pi 
         yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
         
-        # Footprint MiR có thêm 3cm đệm an toàn để MiR API không bắt lỗi 10110
-        fp_m = [(0.536, -0.35), (0.536, 0.35), (-0.484, 0.35), (-0.484, -0.35)]
+        # Sử dụng đúng kích thước thực của MiR (không buff thêm) để đỗ sát nhất có thể
+        fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
         
         for step in range(min_step, max_ray_len): # Quét lùi dần ra xa
             cx = int(px_t + step * math.cos(theta_dock))

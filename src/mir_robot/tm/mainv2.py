@@ -341,6 +341,16 @@ class MainControlMinimal:
             goal.target_pose.pose.orientation.z = diem["qz"]
             goal.target_pose.pose.orientation.w = diem["qw"]
             
+            # GIÁO SƯ HACK: Vả cho MiR tỉnh lại, xóa sạch mission queue và ép State 3 trước khi gửi ActionLib!
+            if self.headers:
+                import requests
+                try:
+                    requests.delete(f"{nav.API_URL}/mission_queue", headers=self.headers, timeout=2)
+                    nav.api_set_state(self.headers, 3)
+                    rospy.sleep(0.5)
+                except:
+                    pass
+            
             self.action_client.send_goal(goal)
             
             is_moving_to_goal = True
