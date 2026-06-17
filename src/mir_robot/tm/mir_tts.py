@@ -6,15 +6,9 @@ import os
 import json
 
 try:
-    import soundfile as sf
+    from gtts import gTTS
 except ImportError:
-    print("Vui lòng chạy: pip install soundfile")
-    sys.exit(1)
-
-try:
-    import sherpa_onnx
-except ImportError:
-    print("Vui lòng chạy: pip install sherpa-onnx")
+    print("Vui lòng chạy: pip install gTTS")
     sys.exit(1)
 
 # Có thể tận dụng file navigationcacdiem.py có sẵn
@@ -23,44 +17,18 @@ import navigationcacdiem as nav
 
 def generate_tts_wav(text: str, output_wav_path: str):
     """
-    Sử dụng model VITS Piper vi_VN (25 hours) cho giọng tự nhiên hơn
+    Sử dụng gTTS (Google Text-to-Speech)
     """
-    # Nếu chạy local trên Ubuntu thì lấy đường dẫn thư mục theo file đang chạy
-    local_dir = os.path.join(os.path.dirname(__file__), "..", "..", "vits-piper-vi_VN-25hours_single-low")
-    
-    # Ưu tiên lấy model local, nếu không thấy thì dùng đường dẫn trong Docker
-    if os.path.exists(local_dir):
-        model_dir = os.path.abspath(local_dir)
-    else:
-        model_dir = "/root/catkin_ws/src/vits-piper-vi_VN-25hours_single-low"
-
-    tts_config = sherpa_onnx.OfflineTtsConfig(
-        model=sherpa_onnx.OfflineTtsModelConfig(
-            vits=sherpa_onnx.OfflineTtsVitsModelConfig(
-                model=os.path.join(model_dir, "vi_VN-25hours_single-low.onnx"),
-                lexicon="",
-                tokens=os.path.join(model_dir, "tokens.txt"),
-                data_dir=os.path.join(model_dir, "espeak-ng-data"),
-                dict_dir="",
-            ),
-            provider="cpu",
-            debug=False,
-        ),
-        rule_fsts="",
-        max_num_sentences=1,
-    )
-    
-    # 2. Xử lý các từ mượn tiếng Anh để AI dễ đọc ra tiếng Việt
+    # 1. Xử lý các từ tiếng Anh để Google dễ đọc
     text_fixed = text.replace("order", "o đờ").replace("coca", "cô ca").replace("lavie", "la vi").replace("Menu", "me nu").replace("timeout", "thai mao").replace("reset", "ri sét")
-    print(f"[TTS] Đang tổng hợp giọng nói cho: '{text_fixed}'...")
+    print(f"[TTS] Đang tổng hợp giọng nói Google cho: '{text_fixed}'...")
     
-    tts = sherpa_onnx.OfflineTts(tts_config)
-    # Giảm tốc độ nói xuống 0.85 (bình thường là 1.0)
-    audio = tts.generate(text_fixed, speed=0.85)
-
-    # Ghi ra file WAV (.wav)
-    sf.write(output_wav_path, audio.samples, audio.sample_rate, subtype='PCM_16')
-    print(f"[TTS] Đã lưu file âm thanh tại: {output_wav_path}")
+    # 2. Sinh giọng nói Google
+    tts = gTTS(text=text_fixed, lang='vi', slow=False)
+    
+    # Ghi ra file (gTTS mặc định là mp3, nhưng MiR có thể đọc được base64 của file này)
+    tts.save(output_wav_path)
+    print(f"[TTS] Đã lưu file âm thanh (Google Voice) tại: {output_wav_path}")
 
 
 def upload_sound_to_mir(headers: dict, wav_path: str, sound_name: str) -> str:

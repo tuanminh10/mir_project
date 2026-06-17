@@ -9,7 +9,7 @@ const char* ROSBRIDGE_HOST = "192.168.0.182";
 const uint16_t ROSBRIDGE_PORT = 9090;
 const char* ROS_TOPIC = "/table_call_buttons";
 
-const int TABLE_NO = 2;
+const int TABLE_NO = 1;
 const int BUTTON_PIN = 0;
 
 const unsigned long DEBOUNCE_MS = 40;

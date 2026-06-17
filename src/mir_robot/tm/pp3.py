@@ -116,9 +116,39 @@ def get_depth_distance_m(depth_frame, box, frame_w, frame_h, center_pt=None):
         
     return float(np.median(person_pts))
 
-# Vô hiệu hóa hàm segmentation vì nó thường xuyên nhận diện sai và lấy d_m của bức tường
-# def get_depth_distance_m_seg(...)
-
+# Tích hợp Segmentation & 2D Radius Filter (Morphological Erosion)
+def get_depth_distance_m_seg(depth_frame, binary_mask, frame_w, frame_h):
+    # 1. Cắt gọt hình thái học (Morphological Erosion) - Tương đương Radius Outlier Removal 3D
+    kernel = np.ones((7, 7), np.uint8) # Gọt mạnh viền (7x7) để tránh hoàn toàn nhiễu từ nền phía sau
+    eroded_mask = cv2.erode(binary_mask, kernel, iterations=1)
+    
+    ys, xs = np.where(eroded_mask == 1)
+    if len(ys) == 0:
+        return -1.0
+        
+    distances = []
+    # Lấy ngẫu nhiên tối đa 400 điểm để tối ưu tốc độ tính toán (Đạt > 60 FPS)
+    step = max(1, len(ys) // 400)
+    
+    for i in range(0, len(ys), step):
+        py = int(ys[i])
+        px = int(xs[i])
+        orig_px = frame_w - 1 - px # Lật trục X vì RGB đã bị cv2.flip(1)
+        
+        if 0 <= orig_px < frame_w and 0 <= py < frame_h:
+            d = depth_frame.get_distance(orig_px, py)
+            if 0.3 < d < 6.0: distances.append(d)
+            
+    if not distances: return -1.0
+        
+    d_arr = np.array(distances)
+    p30_Z = np.percentile(d_arr, 30)
+    
+    mask = (d_arr >= p30_Z - 0.2) & (d_arr <= p30_Z + 0.5)
+    person_pts = d_arr[mask]
+    if len(person_pts) < 5: person_pts = d_arr
+        
+    return float(np.median(person_pts))
 def get_person_relative_position_m(depth_frame, center_pt, frame_w, frame_h, depth_intrinsics, distance_m):
     import math
     import pyrealsense2 as rs
@@ -498,6 +528,45 @@ class VideoThread(QThread):
                     track_id = int(box.id[0].item())
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                     
+                    binary_mask = None
+                    if seg_result and seg_result.masks is not None:
+                        # THUẬT TOÁN IOU: Tìm đúng cái mask thuộc về người này (Tránh lấy nhầm ghế/bàn phím)
+                        best_iou = 0.5
+                        best_mask_idx = -1
+                        for m_idx, seg_box in enumerate(seg_result.boxes.xyxy.cpu().numpy()):
+                            if int(seg_result.boxes.cls[m_idx].item()) != 0: continue # Chỉ lấy class 0 (Person)
+                            
+                            sx1, sy1, sx2, sy2 = seg_box
+                            inter_x1 = max(x1, sx1); inter_y1 = max(y1, sy1)
+                            inter_x2 = min(x2, sx2); inter_y2 = min(y2, sy2)
+                            inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+                            box_area = (x2 - x1) * (y2 - y1)
+                            seg_area = (sx2 - sx1) * (sy2 - sy1)
+                            iou = inter_area / float(box_area + seg_area - inter_area + 1e-6)
+                            
+                            if iou > best_iou:
+                                best_iou = iou
+                                best_mask_idx = m_idx
+                                
+                        if best_mask_idx != -1:
+                            mask_raw = seg_result.masks.data[best_mask_idx].cpu().numpy()
+                            binary_mask = cv2.resize(mask_raw, (frame_w, frame_h))
+                            binary_mask = (binary_mask > 0.5).astype(np.uint8)
+                        
+                        # --- TRỰC QUAN HÓA THUẬT TOÁN GỌT VIỀN LÊN GIAO DIỆN CHỨNG MINH CHO ĐỒ ÁN ---
+                        try:
+                            # 1. Vẽ đường viền gốc (Chưa gọt, còn nhiễu) -> Màu Đỏ nét mỏng
+                            contours_raw, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            cv2.drawContours(annotated_frame, contours_raw, -1, (0, 0, 255), 1)
+                            
+                            # 2. Gọt viền và vẽ đường viền ĐÃ LỌC (Sạch tuyệt đối) -> Màu Xanh Lá nét dày
+                            kernel_vis = np.ones((7, 7), np.uint8)
+                            eroded_mask_vis = cv2.erode(binary_mask, kernel_vis, iterations=1)
+                            contours_eroded, _ = cv2.findContours(eroded_mask_vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            cv2.drawContours(annotated_frame, contours_eroded, -1, (0, 255, 0), 2)
+                        except Exception as e:
+                            pass # Bỏ qua nếu lỗi thư viện đồ họa để tránh sập luồng chính
+                    
                     person_center_x, person_center_y = (x1 + x2) / 2, (y1 + y2) / 2
                     
                     # SỬA LỖI TỌA ĐỘ CUSTOMER BỊ LỆCH (X tăng, Y giảm):
@@ -565,9 +634,14 @@ class VideoThread(QThread):
                             # Vai/Hông có thể lem ra ngoài -> dùng 15% an toàn hơn
                             d_m = float(body_distances[int(len(body_distances) * 0.15)])
                     else:
-                        # LỚP 3 (Fallback cuối): Quét toàn bộ BBox, lấy 5% gần nhất
-                        # Dù có trúng tay giơ (d_m ngắn hơn thật) vẫn tốt hơn xuyên tường!
-                        d_m = get_depth_distance_m(depth_frame, (x1, y1, x2, y2), frame_w, frame_h, (person_center_x, person_center_y))
+                        # LỚP 3: CẮT GỌT THEO SEGMENTATION VÀ 2D RADIUS FILTER
+                        d_m = -1.0
+                        if binary_mask is not None:
+                            d_m = get_depth_distance_m_seg(depth_frame, binary_mask, frame_w, frame_h)
+                        
+                        # LỚP 4 (Fallback cuối cùng): Quét BBox cũ nếu Segmentation thất bại
+                        if binary_mask is None or d_m <= 0:
+                            d_m = get_depth_distance_m(depth_frame, (x1, y1, x2, y2), frame_w, frame_h, (person_center_x, person_center_y))
                     d_ngang_m = d_m
                 
                     is_raising = False
@@ -951,7 +1025,7 @@ class TestPCApp(QMainWindow):
         # BƯỚC 3: DỰA VÀO LIDAR, TÌM ĐIỂM GẦN NHẤT TRÊN TIA ĐỖ CHÉO 45 ĐỘ
         # Dùng CHÍNH XÁC footprint hình chữ nhật của MiR (cộng thêm 3cm an toàn) để check!
         target_step = None
-        min_step = int(0.45 / res) # Bắt đầu dò từ 0.45m, inflate sẽ tự đẩy ra xa nếu cần
+        min_step = int(0.55 / res) # Bắt đầu dò từ 0.45m, inflate sẽ tự đẩy ra xa nếu cần
         
         yaw = theta_dock - math.pi 
         yaw = (yaw + math.pi) % (2 * math.pi) - math.pi

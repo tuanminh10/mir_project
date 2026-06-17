@@ -7,8 +7,56 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="./vendor/roslib.min.js"></script>
+  <style>
+    /* CSS BIỂU CẢM KHUÔN MẶT ROBOT */
+    /* 1. Trạng thái Idle (Đảo mắt, chớp mắt) */
+    @keyframes look-around {
+      0%, 50%, 100% { transform: translateX(0) translateY(0); }
+      15%, 25% { transform: translateX(-40px) translateY(-10px); }
+      30%, 40% { transform: translateX(40px) translateY(-10px); }
+    }
+    @keyframes blink {
+      0%, 90%, 100% { transform: scaleY(1); }
+      95% { transform: scaleY(0.1); }
+    }
+    @keyframes breathe {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+    .face-idle { animation: look-around 10s infinite ease-in-out; }
+    .face-idle .eye { animation: blink 4s infinite; }
+    
+    /* 2. Trạng thái Happy (Cười, nháy mắt) */
+    .face-happy { transform: translateY(-15px); }
+    .face-happy #eye-l {
+      /* Mắt trái cong lên thành hình nụ cười */
+      background: transparent;
+      box-shadow: none;
+      border: 15px solid white;
+      border-bottom: 0;
+      border-radius: 80px 80px 0 0;
+      height: 60px;
+      width: 100px;
+      transform: translateY(40px);
+      filter: drop-shadow(0 0 15px rgba(255,255,255,0.5));
+    }
+    .face-happy #eye-r {
+      /* Mắt phải nháy (dấu >) */
+      background: transparent;
+      box-shadow: none;
+      width: 60px;
+      height: 90px;
+      border-right: 20px solid white;
+      border-top: 20px solid white;
+      border-radius: 10px;
+      transform: rotate(45deg) translateY(20px) translateX(20px);
+      filter: drop-shadow(0 0 15px rgba(255,255,255,0.5));
+    }
+    .face-happy #mouth { opacity: 1; transform: scale(1) translateY(20px); }
+    .face-happy .blush { opacity: 0.8; }
+    
+    .face-container { animation: breathe 4s infinite ease-in-out; }
+  </style>
 </head>
 <body class="h-screen overflow-hidden text-slate-800 relative" style="font-family: 'Noto Sans', 'Segoe UI', Roboto, Arial, sans-serif;">
   <div class="fixed inset-0 z-0 bg-center bg-cover" style="background-image: url('./assets/nen.png'); filter: saturate(65%) brightness(88%);"></div>
@@ -73,6 +121,39 @@
       <div class="mt-4 flex justify-center gap-2">
         <button id="btn-confirm" class="px-4 py-2 rounded-xl bg-[#c21734] text-white font-semibold">Xác nhận đã thanh toán</button>
         <button id="btn-cancel" class="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 font-semibold">Hủy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MÀN HÌNH ĐÔI MẮT (IDLE & EXPRESSIONS) -->
+  <div id="robot-face-overlay" class="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center transition-opacity duration-700">
+    <!-- Status ROS ở góc -->
+    <div class="absolute top-6 right-6 flex flex-col items-end gap-2 z-10 opacity-30 hover:opacity-100 transition-opacity">
+      <div id="idle-ros-status" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-800/50 text-slate-400 border border-slate-700/50 text-xs font-semibold">
+        <span class="w-2 h-2 rounded-full bg-slate-500"></span> Chờ kết nối...
+      </div>
+    </div>
+    
+    <!-- Face Container -->
+    <div class="face-container relative w-[600px] h-[350px] flex items-center justify-center">
+      <div id="face" class="face-idle relative w-full h-full flex items-center justify-center gap-[100px] transition-all duration-500">
+        <!-- Blush trái -->
+        <div class="blush absolute left-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md opacity-0 transition-opacity duration-500"></div>
+        
+        <!-- Mắt trái -->
+        <div id="eye-l" class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative transition-all duration-500"></div>
+        
+        <!-- Miệng (w) -->
+        <div id="mouth" class="absolute top-[220px] left-1/2 -translate-x-1/2 flex items-end opacity-0 scale-50 transition-all duration-500">
+          <div class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 mr-[-8px] filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]"></div>
+          <div class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]"></div>
+        </div>
+        
+        <!-- Blush phải -->
+        <div class="blush absolute right-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md opacity-0 transition-opacity duration-500"></div>
+
+        <!-- Mắt phải -->
+        <div id="eye-r" class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative transition-all duration-500"></div>
       </div>
     </div>
   </div>
@@ -156,15 +237,15 @@
       const tableParam = params.get('ban');
 
       if (tableParam === null || tableParam.trim() === '') {
-        return { tableNo: DEFAULT_TABLE_NO, invalid: false, raw: null };
+        return { tableNo: DEFAULT_TABLE_NO, invalid: false, raw: null, isAtTable: false };
       }
 
       const parsed = Number(tableParam);
       if (Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_TABLE_NO) {
-        return { tableNo: parsed, invalid: false, raw: tableParam };
+        return { tableNo: parsed, invalid: false, raw: tableParam, isAtTable: true };
       }
 
-      return { tableNo: DEFAULT_TABLE_NO, invalid: true, raw: tableParam };
+      return { tableNo: DEFAULT_TABLE_NO, invalid: true, raw: tableParam, isAtTable: true };
     }
 
     const TABLE_CONFIG = parseTableConfigFromUrl();
@@ -178,19 +259,28 @@
       const el = document.getElementById('ros-status');
       const dotEl = document.getElementById('ros-status-dot');
       const textEl = document.getElementById('ros-status-text');
-      if (!el) return;
+      const idleEl = document.getElementById('idle-ros-status');
+      
       if (textEl) textEl.textContent = text;
-      el.className = 'inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm md:text-base font-semibold whitespace-nowrap';
+      if (el) el.className = 'inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm md:text-base font-semibold whitespace-nowrap';
 
+      let idleHtml = '';
       if (type === 'ok') {
-        el.classList.add('bg-emerald-100', 'text-emerald-700');
+        if (el) el.classList.add('bg-emerald-100', 'text-emerald-700');
         if (dotEl) dotEl.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
+        idleHtml = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> ${text}`;
       } else if (type === 'err') {
-        el.classList.add('bg-[#fde8ee]', 'text-[#a30f2d]');
+        if (el) el.classList.add('bg-[#fde8ee]', 'text-[#a30f2d]');
         if (dotEl) dotEl.className = 'w-2.5 h-2.5 rounded-full bg-[#a30f2d]';
+        idleHtml = `<span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> ${text}`;
       } else {
-        el.classList.add('bg-slate-200', 'text-slate-700');
+        if (el) el.classList.add('bg-slate-200', 'text-slate-700');
         if (dotEl) dotEl.className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
+        idleHtml = `<span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span> ${text}`;
+      }
+      
+      if (idleEl) {
+        idleEl.innerHTML = idleHtml;
       }
     }
 
@@ -316,7 +406,10 @@
             if (data.action === "popup_menu" && data.ban) {
               const banId = data.ban.replace(/[^0-9]/g, "");
               if (banId) {
-                window.location.href = "?ban=" + banId;
+                // Chỉ chuyển màn hình nếu đang không ở đúng bàn đó
+                if (!TABLE_CONFIG.isAtTable || TABLE_NO != banId) {
+                  window.location.href = "?ban=" + banId;
+                }
               }
             }
           } catch(e) {}
@@ -473,11 +566,25 @@
       document.getElementById('qr-overlay').classList.remove('flex');
     }
 
+    function setExpression(exp) {
+      const face = document.getElementById('face');
+      if (!face) return;
+      if (exp === 'happy') {
+        face.classList.remove('face-idle');
+        face.classList.add('face-happy');
+      } else {
+        face.classList.remove('face-happy');
+        face.classList.add('face-idle');
+      }
+    }
+
     function confirmPaid() {
       const order = {
         ban: tableNo(),
         tong_tien: totalPrice(),
-        danh_sach_mon: cart.flatMap(i => Array(i.qty).fill(i.name))
+        danh_sach_mon: cart.flatMap(i => Array(i.qty).fill(i.name)),
+        coca: cart.find(i => i.name.toLowerCase().includes('coca'))?.qty || 0,
+        lavie: cart.find(i => i.name.toLowerCase().includes('lavie'))?.qty || 0
       };
 
       if (orderTopic && rosConnected) {
@@ -490,11 +597,25 @@
       cart = [];
       renderCart();
       closeQr();
+      
+      // Chuyển sang biểu cảm HAPPY (Nháy mắt, cười)
+      document.getElementById('robot-face-overlay').classList.remove('hidden');
+      document.getElementById('robot-face-overlay').style.opacity = '1';
+      setExpression('happy');
+      
+      // Chờ 4 giây rồi tự động quay về trạng thái MẮT IDLE
+      setTimeout(() => {
+        window.location.href = "?";
+      }, 4000);
     }
 
     document.getElementById('btn-pay').addEventListener('click', openQr);
     document.getElementById('btn-confirm').addEventListener('click', confirmPaid);
     document.getElementById('btn-cancel').addEventListener('click', closeQr);
+
+    if (TABLE_CONFIG.isAtTable) {
+      document.getElementById('robot-face-overlay').classList.add('hidden');
+    }
 
     renderTableInfo();
     renderCategories();
