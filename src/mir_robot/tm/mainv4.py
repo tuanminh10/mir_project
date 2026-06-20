@@ -865,6 +865,7 @@ class MainApp(QMainWindow):
     map_signal = pyqtSignal(object)
     pose_signal = pyqtSignal(float, float, float)
     request_gui_update_signal = pyqtSignal()
+    retry_nav_signal = pyqtSignal(float, float, object, float, int)
 
     def __init__(self):
         super().__init__()
@@ -925,6 +926,7 @@ class MainApp(QMainWindow):
         self.map_signal.connect(self.map_label.set_map)
         self.pose_signal.connect(self.map_label.set_robot_pose)
         self.request_gui_update_signal.connect(self.map_label.update_view)
+        self.retry_nav_signal.connect(self.calculate_hybrid_safe_goal)
 
         self.video_thread = VideoThread()
         self.video_thread.change_pixmap_signal.connect(self.update_camera_image)
@@ -953,7 +955,23 @@ class MainApp(QMainWindow):
         rospy.logwarn("ĐANG DỪNG KHẨN CẤP...")
         self.video_thread.stop()
         if self.servo: self.servo.cleanup()
-        if self.mir_headers: nav.api_set_state(self.mir_headers, 4)
+        if self.mir_headers: 
+            nav.api_set_state(self.mir_headers, 4) # Đưa xe về Pause
+            try:
+                import requests
+                # XÓA TẤT CẢ MISSION TRÊN WEB (QUEUE)
+                requests.delete("http://192.168.0.177/api/v2.0.0/mission_queue", headers=self.mir_headers, timeout=2)
+                rospy.logwarn("Đã xóa toàn bộ Mission Queue trên MiR Web!")
+                
+                # DỌN DẸP CÁC ĐIỂM TẠM THỜI (Rác trên map)
+                r = requests.get("http://192.168.0.177/api/v2.0.0/positions", headers=self.mir_headers, timeout=2)
+                if r.status_code == 200:
+                    for p in r.json():
+                        if p.get("name", "").startswith("_nav_") or p.get("name", "").startswith("_test_"):
+                            requests.delete(f"http://192.168.0.177/api/v2.0.0/positions/{p['guid']}", headers=self.mir_headers, timeout=1)
+                rospy.logwarn("Đã dọn dẹp các điểm rác tạm thời!")
+            except Exception as e:
+                rospy.logerr(f"Lỗi khi dọn dẹp REST API: {e}")
 
     def update_camera_image(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
@@ -1025,12 +1043,15 @@ class MainApp(QMainWindow):
         if not self.laptop_yolo: return True
         start = rospy.Time.now()
         success = 0
+        last_print_time = 0
         while (rospy.Time.now() - start).to_sec() < timeout:
             frame = self.video_thread.get_latest_frame()
             if frame is None:
                 time.sleep(0.1)
                 continue
                 
+            # Ghi chú: Hàm track() chỉ chạy khi nằm trong vòng lặp này.
+            # Ngay khi verify_tray kết thúc (return), luồng AI check nước tự động ĐÓNG LẠI.
             res = self.laptop_yolo.track(frame, persist=True, stream=True, conf=0.40, verbose=False)
             coca, lavie = 0, 0
             for r in res:
@@ -1038,6 +1059,17 @@ class MainApp(QMainWindow):
                     for b in r.boxes:
                         if int(b.cls[0]) == 0: coca += 1
                         else: lavie += 1
+                        
+            now = time.time()
+            if now - last_print_time > 1.0:
+                if check_empty:
+                    print(f"[VERIFY TRAY] 📷 Đang chờ khách lấy đồ... Hiện tại trên khay: Coca: {coca}, Lavie: {lavie}")
+                else:
+                    ec, el = max(0, exp_coca), max(0, exp_lavie)
+                    if ec == 0 and el == 0: el = 1
+                    print(f"[VERIFY TRAY] 📷 Đang kiểm tra đồ uống: Coca {coca}/{ec} | Lavie {lavie}/{el}")
+                last_print_time = now
+
             if check_empty:
                 if coca == 0 and lavie == 0: success += 1
                 else: success = 0
@@ -1046,9 +1078,16 @@ class MainApp(QMainWindow):
                 if ec==0 and el==0: el=1
                 if coca >= ec and lavie >= el: success += 1
                 else: success = 0
-            if success >= 5:
+                
+            if success >= 5: # Cần 5 khung hình liên tiếp đạt chuẩn để chống nhiễu
+                if check_empty:
+                    print(f"[VERIFY TRAY] ✅ KHÁCH ĐÃ LẤY HẾT ĐỒ! Tắt AI quét nước.")
+                else:
+                    print(f"[VERIFY TRAY] ✅ ĐỒ UỐNG ĐÃ ĐỦ! Tắt AI quét nước.")
                 return True
             time.sleep(0.1) # Giảm tải CPU khi check
+            
+        print("[VERIFY TRAY] ❌ Hết thời gian chờ!")
         return False
 
     def worker_loop(self):
@@ -1085,7 +1124,7 @@ class MainApp(QMainWindow):
             self.scanning_event.clear()
             self.video_thread.is_scanning_for_hand = True
             
-            if self.scanning_event.wait(timeout=20.0):
+            if self.scanning_event.wait(timeout=30.0):
                 self.video_thread.is_scanning_for_hand = False
                 tx, ty, obj = self.target_locked_coords
                 self.saved_locations[target] = (tx, ty)
@@ -1118,7 +1157,9 @@ class MainApp(QMainWindow):
             mir_tts.speak_on_mir("Đang quay về bếp để nhận món.")
             if self.servo: self.servo.set_angle(95)
             ok = self.move_to_static_goal("bep", cancel_event=cancel_event)
-            if ok: mir_tts.speak_on_mir("Mời bếp đặt đồ lên xe và bấm nút xác nhận.")
+            if ok: 
+                if self.servo: self.servo.set_angle(155) # Cúi camera xuống khay ngay lập tức để nhà bếp biết
+                mir_tts.speak_on_mir("Mời bếp đặt đồ lên xe và bấm nút xác nhận.")
 
         elif ttype == "DELIVER":
             if self.servo: self.servo.set_angle(155)
@@ -1148,7 +1189,9 @@ class MainApp(QMainWindow):
             mir_tts.speak_on_mir(f"Đã tới nơi. Mời khách lấy đồ uống.")
             
             # Gập camera xuống để quét khay xem khách lấy hết chưa
-            if self.servo: self.servo.set_angle(155)
+            if self.servo: 
+                self.servo.set_angle(155)
+                time.sleep(2.0) # QUAN TRỌNG: Đợi 2 giây để Motor quay và Camera chống rung hoàn toàn mới bắt đầu quét
             
             is_empty = False
             for i in range(3): # Chờ tối đa 3 lần x 20 giây = 60s
@@ -1168,8 +1211,7 @@ class MainApp(QMainWindow):
                 
             self.active_orders.pop(target, None)
 
-    def calculate_hybrid_safe_goal(self, target_x, target_y, obs_pt_map=None):
-
+    def calculate_hybrid_safe_goal(self, target_x, target_y, obs_pt_map=None, min_dist_m=0.50, attempt=0):
         if not self.map_label.map_info or self.map_label.robot_px is None:
             return
             
@@ -1192,7 +1234,7 @@ class MainApp(QMainWindow):
         # HIỂN THỊ NGAY LẬP TỨC ĐIỂM CUSTOMER LÊN GIAO DIỆN VÀ TERMINAL
         print(f"\n[TARGET LOCKED] Đã lấy được tọa độ Customer: X = {target_x:.2f}, Y = {target_y:.2f}")
         self.map_label.target_px = (int(px_t), h - int(py_t) - 1)
-        self.request_gui_update_signal.emit()
+        self.map_label.update_view()
 
         # TẠO LƯỚI TỔNG HỢP GLOBAL TỪ BẢN ĐỒ 2D
         # 1. BẢN ĐỒ VA CHẠM (COLLISION): Tính cả Unknown (-1) là vật cản để xe KHÔNG đi vào lòng bàn
@@ -1278,63 +1320,92 @@ class MainApp(QMainWindow):
         
         print(f"[SMART NAV] Hướng không gian rộng nhất: {math.degrees(theta_open):.0f}°")
             
-        # BƯỚC 2: QUÉT VÙNG CHÉO TRÁI & PHẢI ĐỂ CHỌN BÊN THOÁNG HƠN
-        obs_left = 0
-        obs_right = 0
-        for step in range(1, int(1.5 / res)): # Quét check vật cản xa 1.5m
-            for offset_deg in range(15, 75, 5): # Quét góc chéo 45 độ (từ 15->75)
-                # Bên Trái (+offset)
-                rad_l = theta_open + math.radians(offset_deg)
-                cx_l = int(px_t + step * math.cos(rad_l))
-                cy_l = int(py_t + step * math.sin(rad_l))
-                if 0 <= cx_l < w and 0 <= cy_l < h and combined_obs[cy_l, cx_l] > 0:
-                    obs_left += 1
-                
-                # Bên Phải (-offset)
-                rad_r = theta_open - math.radians(offset_deg)
-                cx_r = int(px_t + step * math.cos(rad_r))
-                cy_r = int(py_t + step * math.sin(rad_r))
-                if 0 <= cx_r < w and 0 <= cy_r < h and combined_obs[cy_r, cx_r] > 0:
-                    obs_right += 1
-                    
-        if obs_left > obs_right:
-            theta_dock_raw = theta_open - math.radians(45)
-            print(f"[SMART NAV] ↪️ Không gian PHẢI thoáng hơn (L={obs_left}, R={obs_right}).")
-        else:
-            theta_dock_raw = theta_open + math.radians(45)
-            print(f"[SMART NAV] ↪️ Không gian TRÁI thoáng hơn (L={obs_left}, R={obs_right}).")
-            
-        # ÉP GÓC VỀ HỆ TỌA ĐỘ TOÀN CỤC CỦA MAP (45, 135, -45, -135)
+        # BƯỚC 2: TÍNH 2 ĐƯỜNG ĐỖ CHÉO (TRÁI 45° & PHẢI 45°)
+        theta_raw_left = theta_open + math.radians(45)
+        theta_raw_right = theta_open - math.radians(45)
+        
         # Bắt các góc xéo 45 độ so với trục tòa nhà
         global_angles = [45, 135, -45, -135]
-        theta_dock_deg = math.degrees(theta_dock_raw)
-        best_angle = min(global_angles, key=lambda a: abs((a - theta_dock_deg + 180) % 360 - 180))
-        theta_dock = math.radians(best_angle)
-        print(f"[SMART NAV] 🌐 Ép góc đỗ chuẩn theo hệ tọa độ Map: {best_angle}°")
+        def get_snapped_angle(raw_rad):
+            deg = math.degrees(raw_rad)
+            best = min(global_angles, key=lambda a: abs((a - deg + 180) % 360 - 180))
+            return math.radians(best), best
             
-        # BƯỚC 3: DỰA VÀO LIDAR, TÌM ĐIỂM GẦN NHẤT TRÊN TIA ĐỖ CHÉO 45 ĐỘ
-        # Dùng CHÍNH XÁC footprint hình chữ nhật của MiR (cộng thêm 3cm an toàn) để check!
-        target_step = None
-        min_step = int(0.55 / res) # Bắt đầu dò từ 0.45m, inflate sẽ tự đẩy ra xa nếu cần
+        theta_left, deg_left = get_snapped_angle(theta_raw_left)
+        theta_right, deg_right = get_snapped_angle(theta_raw_right)
         
+        print(f"[SMART NAV] 🔄 So sánh 2 đường đỗ chéo: TRÁI ({deg_left}°) và PHẢI ({deg_right}°)")
+        
+        # BƯỚC 3: KIỂM TRA FOOTPRINT TRÊN CẢ 2 ĐƯỜNG
+        fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
+        min_step = int(max(0.50, min_dist_m) / res) # Bắt đầu dò từ min_dist_m
+        self.map_label.all_rejected_pts = []
+        
+        def test_path(theta_dock_test):
+            yaw_test = theta_dock_test - math.pi 
+            yaw_test = (yaw_test + math.pi) % (2 * math.pi) - math.pi
+            
+            for step in range(min_step, max_ray_len):
+                cx = int(px_t + step * math.cos(theta_dock_test))
+                cy = int(py_t + step * math.sin(theta_dock_test))
+                if not (0 <= cx < w and 0 <= cy < h): break
+                
+                pts = []
+                for dx, dy in fp_m:
+                    rx = (dx * math.cos(yaw_test) - dy * math.sin(yaw_test)) / res
+                    ry = (dx * math.sin(yaw_test) + dy * math.cos(yaw_test)) / res
+                    pts.append([int(cx + rx), int(cy + ry)])
+                pts = np.array(pts, np.int32).reshape((-1, 1, 2))
+                
+                x_min, y_min = np.min(pts, axis=0)[0]
+                x_max, y_max = np.max(pts, axis=0)[0]
+                x_min = max(0, x_min); y_min = max(0, y_min)
+                x_max = min(w-1, x_max); y_max = min(h-1, y_max)
+                if x_min >= x_max or y_min >= y_max: continue
+                
+                roi = inflated_obs[y_min:y_max+1, x_min:x_max+1]
+                local_pts = pts - np.array([x_min, y_min])
+                mask = np.zeros_like(roi)
+                cv2.fillPoly(mask, [local_pts], 255)
+                
+                collision_pixels = (roi > 0) & (mask > 0)
+                if not np.any(collision_pixels): 
+                    return step, pts
+            return None, None
+
+        step_left, pts_left = test_path(theta_left)
+        step_right, pts_right = test_path(theta_right)
+        
+        theta_dock = theta_left
+        target_step = None
+        
+        if step_left is not None and step_right is not None:
+            if step_left <= step_right:
+                print(f"[SMART NAV] ✅ Chọn đường TRÁI ({deg_left}°) vì đỗ được gần hơn (Cự ly: {step_left*res:.2f}m so với {step_right*res:.2f}m)")
+                theta_dock = theta_left; target_step = step_left
+            else:
+                print(f"[SMART NAV] ✅ Chọn đường PHẢI ({deg_right}°) vì đỗ được gần hơn (Cự ly: {step_right*res:.2f}m so với {step_left*res:.2f}m)")
+                theta_dock = theta_right; target_step = step_right
+        elif step_left is not None:
+            print(f"[SMART NAV] ✅ Chọn đường TRÁI ({deg_left}°) (Đường Phải bị chặn kín)")
+            theta_dock = theta_left; target_step = step_left
+        elif step_right is not None:
+            print(f"[SMART NAV] ✅ Chọn đường PHẢI ({deg_right}°) (Đường Trái bị chặn kín)")
+            theta_dock = theta_right; target_step = step_right
+        else:
+            print("[SMART NAV] ❌ CẢNH BÁO: Cả 2 hướng đều bị chặn kín! Ép thử hướng Trái.")
+            theta_dock = theta_left; target_step = min_step
+            
+        # BƯỚC 4: RENDER QUÁ TRÌNH TÌM ĐIỂM (ĐỂ HIỂN THỊ ANIMATION TRÊN ĐƯỜNG ĐÃ CHỌN)
         yaw = theta_dock - math.pi 
         yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
         
-        # FOOTPRINT CHUẨN CỦA MiR (không thổi phồng)
-        fp_m = [(0.506, -0.32), (0.506, 0.32), (-0.454, 0.32), (-0.454, -0.32)]
-        
-        self.map_label.all_rejected_pts = []
-        
-        for step in range(min_step, max_ray_len): # Quét lùi dần ra xa
+        for step in range(min_step, target_step + 1):
             cx = int(px_t + step * math.cos(theta_dock))
             cy = int(py_t + step * math.sin(theta_dock))
-            
-            if not (0 <= cx < w and 0 <= cy < h):
-                break
-                
+            if not (0 <= cx < w and 0 <= cy < h): break
             self.map_label.ray_pixels.append((cx, h - cy - 1))
             
-            # Tạo Polygon Footprint tại vị trí (cx, cy) với góc yaw
             pts = []
             for dx, dy in fp_m:
                 rx = (dx * math.cos(yaw) - dy * math.sin(yaw)) / res
@@ -1342,43 +1413,26 @@ class MainApp(QMainWindow):
                 pts.append([int(cx + rx), int(cy + ry)])
             pts = np.array(pts, np.int32).reshape((-1, 1, 2))
             
-            # Tính Bounding Box
-            x_min, y_min = np.min(pts, axis=0)[0]
-            x_max, y_max = np.max(pts, axis=0)[0]
-            x_min = max(0, x_min); y_min = max(0, y_min)
-            x_max = min(w-1, x_max); y_max = min(h-1, y_max)
-            
-            if x_min >= x_max or y_min >= y_max:
-                continue
-                
-            # Cắt ROI trên map ĐÃ INFLATE (khớp với Costmap MiR)
-            roi = inflated_obs[y_min:y_max+1, x_min:x_max+1]
-            local_pts = pts - np.array([x_min, y_min])
-            mask = np.zeros_like(roi)
-            cv2.fillPoly(mask, [local_pts], 255)
-            
-            # KIỂM TRA VA CHẠM: Nếu phép AND = 0 => Vùng Footprint HOÀN TOÀN TRỐNG!
-            collision_pixels = (roi > 0) & (mask > 0)
-            if not np.any(collision_pixels): 
+            if step == target_step:
                 print(f"  ✅ [CHẤP NHẬN] Tại cự ly {step*res:.2f}m: Footprint hoàn toàn trống trải.")
-                target_step = step
-                break
             else:
-                num_collisions = np.sum(collision_pixels)
+                x_min, y_min = np.min(pts, axis=0)[0]
+                x_max, y_max = np.max(pts, axis=0)[0]
+                x_min = max(0, x_min); y_min = max(0, y_min)
+                x_max = min(w-1, x_max); y_max = min(h-1, y_max)
+                roi = inflated_obs[y_min:y_max+1, x_min:x_max+1]
+                local_pts = pts - np.array([x_min, y_min])
+                mask = np.zeros_like(roi)
+                cv2.fillPoly(mask, [local_pts], 255)
+                num_collisions = np.sum((roi > 0) & (mask > 0))
                 print(f"  ❌ [TỪ CHỐI] Tại cự ly {step*res:.2f}m: Bị đè lên {num_collisions} pixel đen (vật cản/tường/bàn) trên bản đồ!")
                 self.map_label.last_rejected_pts = pts
-                
-                # Bắn tín hiệu để luồng chính vẽ lên giao diện an toàn
-                self.request_gui_update_signal.emit()
-                time.sleep(3.0) # Tạm để 3s để giáo sư không phải đợi quá lâu
-                
-        # NẾU TẤT CẢ ĐIỂM ĐỀU BỊ CHẶN: Vẫn chốt điểm sát nhất để hiển thị lên Map và ném cho MiR (MiR sẽ báo lỗi 10110 nhưng User sẽ thấy rõ trên Map)
-        if target_step is None:
-            print("[SMART NAV] ❌ CẢNH BÁO: Không có điểm nào an toàn (Footprint liếm vào vật cản). Vẫn cố gắng hiển thị và thử đỗ!")
-            target_step = min_step
+                self.map_label.update_view()
+                QApplication.processEvents()
+                time.sleep(1.0) # Animation nhanh hơn để đỡ chờ lâu
             
         target_dist_m = target_step * res
-        target_dist_m += 0.05 # Lùi thêm 0.05m an toàn so với điểm check cuối cùng
+        target_dist_m += 0.10 # Lùi thêm an toàn so với điểm check cuối cùng
         
         final_step = target_dist_m / res
         
@@ -1410,7 +1464,8 @@ class MainApp(QMainWindow):
         self.map_label.target_px = (int(px_t), h - int(py_t) - 1)
         self.map_label.goal_yaw = yaw
         self.map_label.goal_px = (px_x, h - px_y - 1)
-        self.request_gui_update_signal.emit() # ÉP GUI VẼ LÊN MÀN HÌNH BẰNG TÍN HIỆU AN TOÀN
+        self.map_label.update_view()
+        QApplication.processEvents() # ÉP GUI VẼ LÊN MÀN HÌNH TỨC THÌ TRƯỚC KHI BỊ API BLOCK!
         
         print(f"[SMART NAV] ✅ Chốt điểm đỗ DUY NHẤT dựa theo Lidar: Cự ly {target_dist_m:.2f}m, Góc = {math.degrees(yaw):.1f}°")
         print(f"🚀 [NAV] Bắn lệnh tới MiR Fleet / MoveBase!")
@@ -1419,133 +1474,133 @@ class MainApp(QMainWindow):
         self.is_moving = True
         
         # CHẠY NAVIGATION TRONG THREAD RIÊNG ĐỂ KHÔNG BLOCK QT MAIN THREAD
-        # CHẠY NAVIGATION TRONG THREAD RIÊNG ĐỂ KHÔNG BLOCK QT MAIN THREAD
         import threading
         def _nav_worker():
             current_dist_m = target_dist_m
-            max_retries = 6 # Cho phép thử lùi thêm tối đa 6 lần (tổng cộng 0.30m)
+            max_retries = 6 
             final_success = False
             
-            for attempt in range(max_retries):
-                # Tính lại tọa độ đích với cự ly lùi mới
-                f_step = current_dist_m / res
-                n_px_x = int(px_t + f_step * math.cos(theta_dock))
-                n_px_y = int(py_t + f_step * math.sin(theta_dock))
+            # Tính tọa độ đích
+            f_step = current_dist_m / res
+            n_px_x = int(px_t + f_step * math.cos(theta_dock))
+            n_px_y = int(py_t + f_step * math.sin(theta_dock))
+            
+            n_w_x = ox + n_px_x * res
+            n_w_y = oy + n_px_y * res
+            
+            current_diem = {
+                "x": n_w_x, 
+                "y": n_w_y, 
+                "qz": q[2], 
+                "qw": q[3], 
+                "arrive_dist": 0.15,
+                "dist_m": current_dist_m
+            }
+            
+            print(f"\n========================================================")
+            print(f"[SMART NAV] 🚀 BẮT ĐẦU THỬ NGHIỆM ĐỖ LẦN {attempt+1}/{max_retries}")
+            print(f"📍 Tọa độ gửi xuống MiR: X={n_w_x:.2f}, Y={n_w_y:.2f} (Cự ly lùi: {current_dist_m:.2f}m)")
+            print(f"========================================================\n")
+            
+            rest_ok = False
+            
+            if hasattr(self, 'mir_headers') and self.mir_headers:
+                try:
+                    rest_ok = nav.api_navigate(self.mir_headers, [current_diem], "diem_dong")
+                except Exception as e:
+                    print(f"[SMART NAV] ❌ CRASH API: {e}")
+                    
+            if rest_ok:
+                print(f"\n🎉 QUÁ TUYỆT VỜI! MiR đã chấp nhận điểm ở cự ly {current_dist_m:.2f}m. BẮT ĐẦU THEO DÕI HÀNH TRÌNH...\n")
                 
-                n_w_x = ox + n_px_x * res
-                n_w_y = oy + n_px_y * res
+                # THEO DÕI HÀNH TRÌNH CHO TỚI KHI ĐẾN ĐÍCH (Chống Lỗi Tím giữa đường)
+                reached = False
+                last_moving_time = time.time()
+                last_px, last_py = None, None
                 
-                current_diem = {
-                    "x": n_w_x, 
-                    "y": n_w_y, 
-                    "qz": q[2], 
-                    "qw": q[3], 
-                    "arrive_dist": 0.15,
-                    "dist_m": current_dist_m
-                }
-                
-                print(f"\n========================================================")
-                print(f"[SMART NAV] 🚀 BẮT ĐẦU THỬ NGHIỆM ĐỖ LẦN {attempt+1}/{max_retries}")
-                print(f"📍 Tọa độ gửi xuống MiR: X={n_w_x:.2f}, Y={n_w_y:.2f} (Cự ly lùi: {current_dist_m:.2f}m)")
-                print(f"========================================================\n")
-                
-                rest_ok = False
-                
-                if hasattr(self, 'mir_headers') and self.mir_headers:
+                while True:
+                    time.sleep(1.0)
                     try:
-                        rest_ok = nav.api_navigate(self.mir_headers, [current_diem], "diem_dong")
-                    except Exception as e:
-                        print(f"[SMART NAV] ❌ CRASH API: {e}")
-                        
-                if rest_ok:
-                    print(f"\n🎉 QUÁ TUYỆT VỜI! MiR đã chấp nhận điểm ở cự ly {current_dist_m:.2f}m. BẮT ĐẦU THEO DÕI HÀNH TRÌNH...\n")
-                    
-                    # THEO DÕI HÀNH TRÌNH CHO TỚI KHI ĐẾN ĐÍCH (Chống Lỗi Tím giữa đường)
-                    reached = False
-                    last_moving_time = time.time()
-                    last_px, last_py = None, None
-                    
-                    while True:
-                        time.sleep(1.0)
-                        try:
-                            st = nav.api_status(self.mir_headers)
-                            if st:
-                                s_id = st.get("state_id", -1)
+                        st = nav.api_status(self.mir_headers)
+                        if st:
+                            s_id = st.get("state_id", -1)
+                            
+                            # Nếu dính Lỗi Tím (10, 12) TRONG LÚC ĐANG CHẠY
+                            if s_id in (10, 12):
+                                rest_ok = False # Đánh dấu LỖI để kích hoạt tính năng lùi ở block else
+                                print(f"   [THEO DÕI] 💥 CHẾT RỒI! Đang chạy thì bị Lỗi Tím (State {s_id})!")
+                                break
                                 
-                                # Nếu dính Lỗi Tím (10, 12) TRONG LÚC ĐANG CHẠY
-                                if s_id in (10, 12):
-                                    rest_ok = False # Đánh dấu LỖI để kích hoạt tính năng lùi 0.05m ở block else
-                                    print(f"   [THEO DÕI] 💥 CHẾT RỒI! Đang chạy thì bị Lỗi Tím (State {s_id})!")
+                            # Lấy vị trí để check kẹt
+                            if "position" in st:
+                                rx, ry = st["position"].get("x"), st["position"].get("y")
+                                dist_to_goal = math.hypot(rx - n_w_x, ry - n_w_y)
+                                
+                                # Nếu đã đến đích an toàn (State 3 - Ready và cự ly còn lại < 0.4m)
+                                if s_id == 3 and dist_to_goal < 0.4:
+                                    print(f"   [THEO DÕI] 🎯 Đã đến đích an toàn tuyệt đối!")
+                                    reached = True
                                     break
                                     
-                                # Lấy vị trí để check kẹt
-                                if "position" in st:
-                                    rx, ry = st["position"].get("x"), st["position"].get("y")
-                                    dist_to_goal = math.hypot(rx - n_w_x, ry - n_w_y)
+                                if s_id == 4:
+                                    # Nếu đang pause, không đếm thời gian kẹt
+                                    last_moving_time = time.time()
                                     
-                                    # Nếu đã đến đích an toàn (State 3 - Ready và cự ly còn lại < 0.4m)
-                                    if s_id == 3 and dist_to_goal < 0.4:
-                                        print(f"   [THEO DÕI] 🎯 Đã đến đích an toàn tuyệt đối!")
-                                        reached = True
-                                        break
-                                        
-                                    if s_id == 4:
-                                        # Nếu đang pause, không đếm thời gian kẹt
-                                        last_moving_time = time.time()
-                                        
-                                    if s_id == 5:
-                                        # Tính toán xem có bị kẹt cứng một chỗ quá lâu không
-                                        if last_px is not None:
-                                            moved_dist = math.hypot(rx - last_px, ry - last_py)
-                                            if moved_dist > 0.05:
-                                                last_moving_time = time.time()
-                                                last_px, last_py = rx, ry
-                                        else:
+                                if s_id == 5:
+                                    # Tính toán xem có bị kẹt cứng một chỗ quá lâu không
+                                    if last_px is not None:
+                                        moved_dist = math.hypot(rx - last_px, ry - last_py)
+                                        if moved_dist > 0.05:
+                                            last_moving_time = time.time()
                                             last_px, last_py = rx, ry
-                                            
-                                        # Nếu đã đứng im 8 giây mà vẫn đang Executing -> Bị kẹt vật cản vô hình!
-                                        if time.time() - last_moving_time > 8.0:
-                                            rest_ok = False
-                                            print(f"   [THEO DÕI] 🐢 BỊ KẸT CỨNG MỘT CHỖ QUÁ 8 GIÂY! (Dù MiR chưa chịu báo Lỗi Tím). Tự động ép Lỗi!")
-                                            break
-                        except Exception as e:
-                            pass
-                            
-                    if reached:
-                        final_success = True
-                        self.nav_arrived_event.set()
-                        break
+                                    else:
+                                        last_px, last_py = rx, ry
+                                        
+                                    # Nếu đã đứng im 8 giây mà vẫn đang Executing -> Bị kẹt vật cản vô hình!
+                                    if time.time() - last_moving_time > 8.0:
+                                        rest_ok = False
+                                        print(f"   [THEO DÕI] 🐢 BỊ KẸT CỨNG MỘT CHỖ QUÁ 8 GIÂY! Tự động ép Lỗi!")
+                                        break
+                    except Exception as e:
+                        pass
+                        
+                if reached:
+                    final_success = True
+                    self.nav_arrived_event.set()
+            
+            # Nếu rest_ok == False (Do Lỗi Tím hoặc Bị Kẹt Cứng)
+            if not rest_ok:
+                print(f"\n⚠️ [CẢNH BÁO] PHÁT HIỆN LỖI TÍM HOẶC BỊ KẸT TỪ BỘ NÃO MIR! ⚠️")
+                print(f"   Nguyên nhân: Tại cự ly {current_dist_m:.2f}m vẫn bị đè lên vật cản thực tế.")
+                print(f"   💡 HƯỚNG GIẢI QUYẾT: QUÉT LẠI LIDAR VÀ TÍNH TOÁN LẠI TỪ ĐẦU!")
                 
-                # Nếu rest_ok == False (Do Lỗi Tím hoặc Bị Kẹt Cứng)
-                if not rest_ok:
-                    print(f"\n⚠️ [CẢNH BÁO] PHÁT HIỆN LỖI TÍM HOẶC BỊ KẸT TỪ BỘ NÃO MIR! ⚠️")
-                    print(f"   Nguyên nhân: MiR đánh giá tọa độ ({n_w_x:.2f}, {n_w_y:.2f}) vẫn bị đè lên vật cản (ghế/bàn/người).")
-                    print(f"   💡 HƯỚNG GIẢI QUYẾT TỰ ĐỘNG:")
-                    print(f"      1. Hủy lệnh cũ đang chạy (Mission Queue).")
-                    print(f"      2. Gửi lệnh API Xóa Lỗi Tím (Clear Error).")
-                    print(f"      3. Tự động lùi điểm đỗ ra xa thêm 0.10m.")
-                    print(f"      4. Thử gửi lại lệnh mới...\n")
+                # 1 & 2. XÓA QUEUE VÀ XÓA LỖI TÍM (REST API)
+                try:
+                    import requests
+                    requests.delete("http://192.168.0.177/api/v2.0.0/mission_queue", headers=self.mir_headers, timeout=2)
+                    requests.put("http://192.168.0.177/api/v2.0.0/status", headers=self.mir_headers, json={"clear_error": True}, timeout=2)
+                    print(f"   ✅ Đã hủy lệnh cũ và Xóa Lỗi thành công.")
+                except:
+                    print(f"   ❌ Không thể gửi lệnh Xóa Lỗi.")
+                
+                if attempt < max_retries - 1:
+                    print(f"   🔄 Bắn tín hiệu tính toán lại mục tiêu từ cự ly {current_dist_m + 0.10:.2f}m...")
+                    time.sleep(1.0)
+                    self.retry_nav_signal.emit(target_x, target_y, obs_pt_map, current_dist_m + 0.10, attempt + 1)
+                    return # Thoát thread cũ
+                else:
+                    print("[SMART NAV] ⚠️ Đã hết số lần tự động lùi (6 lần). Lỗi quá nặng hoặc đường bị chặn kín!")
                     
-                    # 1 & 2. XÓA QUEUE VÀ XÓA LỖI TÍM (REST API)
-                    try:
-                        import requests
-                        requests.delete("http://192.168.0.177/api/v2.0.0/mission_queue", headers=self.mir_headers, timeout=2)
-                        requests.put("http://192.168.0.177/api/v2.0.0/status", headers=self.mir_headers, json={"clear_error": True}, timeout=2)
-                        print(f"   ✅ Đã hủy lệnh cũ và Xóa Lỗi thành công.")
-                    except:
-                        print(f"   ❌ Không thể gửi lệnh Xóa Lỗi.")
-                    
-                    # 3. Tăng khoảng cách lùi thêm 0.10m cho lần thử tiếp theo
-                    current_dist_m += 0.10
-                    time.sleep(1.0) # Đợi 1 giây để MiR hoàn hồn sau khi xóa lỗi
-                    
-            if not final_success and self.robot:
-                print("\n[SMART NAV] ⚠️ Đã hết số lần tự động lùi (6 lần). Lỗi quá nặng hoặc đường bị chặn kín!")
+            if not final_success and attempt >= max_retries - 1 and self.robot:
                 print("Ép chạy fallback bằng ROS (ws_send_goal)...\n")
-                nav.ws_send_goal(self.robot, diem_dong)
+                nav.ws_send_goal(self.robot, current_diem)
                 self.nav_arrived_event.set()
-        
+                
         threading.Thread(target=_nav_worker, daemon=True).start()
+
+
+
+
 
     
 

@@ -605,10 +605,16 @@ def wait_arrival(robot, diem, headers=None, timeout=TIMEOUT, rest_mode=False, ca
                 last_log = now
 
             if dist < arrive_dist:
-                print(f"  ✓ Đã đến! (cách đích {dist:.2f}m)")
-                robot.unhook(pose_cb)
-                robot.unhook(status_cb)
-                return True
+                if not rest_mode:
+                    print(f"  ✓ Đã đến (WebSocket Mode)! (cách đích {dist:.2f}m)")
+                    robot.unhook(pose_cb)
+                    robot.unhook(status_cb)
+                    return True
+                else:
+                    # Trong chế độ REST, dù khoảng cách đã đạt yêu cầu nhưng xe vẫn có thể đang lăn bánh (Executing).
+                    # Ta không return True ngay để tránh vỡ State Machine, phải chờ REST báo Done!
+                    if now - last_log > 3.0:
+                        print(f"  [Chờ dừng hẳn] Đã vào vùng đích (cách {dist:.2f}m), đang chờ MiR phanh lại...")
 
         # ── REST API polling — timer RIÊNG, không dùng last_log ──
         if headers and now - last_rest > 2.0:

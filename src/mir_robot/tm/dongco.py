@@ -2,60 +2,60 @@
 import time
 import math
 
+import serial
+import serial.tools.list_ports
+
+import glob
+
 class ServoController:
     def __init__(self, pin=18, min_angle=0, max_angle=180, min_pulse=2.5, max_pulse=12.5):
         """
-        Khởi tạo điều khiển Servo 35kg (thường sử dụng PWM 50Hz).
-        * Lưu ý: Bạn cần chạy lệnh `sudo pip3 install RPi.GPIO` để cài đặt thư viện nếu dùng Raspberry Pi/Jetson.
-        
-        :param pin: Chân GPIO (BCM) kết nối với dây tín hiệu (màu cam/vàng) của Servo
-        :param min_angle: Góc quay nhỏ nhất (ví dụ: 0 độ)
-        :param max_angle: Góc quay lớn nhất (ví dụ: 180 hoặc 270 độ tùy loại Servo 35kg)
-        :param min_pulse: Duty cycle tương ứng góc nhỏ nhất (thường từ 2% - 2.5%)
-        :param max_pulse: Duty cycle tương ứng góc lớn nhất (thường từ 10% - 12.5%)
+        Khởi tạo điều khiển Servo thông qua Arduino (Serial/USB).
+        Sẽ tự động quét tìm cổng ttyUSB hoặc ttyACM.
         """
-        self.pin = pin
         self.min_angle = min_angle
         self.max_angle = max_angle
-        self.min_pulse = min_pulse
-        self.max_pulse = max_pulse
+        self.serial_port = None
         
-        try:
-            import RPi.GPIO as GPIO
-            self.GPIO = GPIO
-            self.GPIO.setmode(self.GPIO.BCM)
-            self.GPIO.setwarnings(False)
-            self.GPIO.setup(self.pin, self.GPIO.OUT)
-            # Tần số 50Hz (chu kỳ 20ms) - chuẩn cho servo
-            self.pwm = self.GPIO.PWM(self.pin, 50)
-            self.pwm.start(0)
-            print(f"[ServoController] Đã khởi tạo servo tại chân GPIO {self.pin}")
-        except ImportError:
-            print("[Cảnh báo] Không tìm thấy thư viện RPi.GPIO. Chế độ mô phỏng (Simulation) được bật.")
-            self.GPIO = None
-            self.pwm = None
+        # Quét trực tiếp thư mục /dev/ bằng glob thay vì list_ports (tránh lỗi udev trong Docker)
+        # Ưu tiên ttyACM trước (thường là Arduino xịn), sau đó mới tới ttyUSB (tránh nhận nhầm Lidar)
+        ports_acm = glob.glob('/dev/ttyACM*')
+        ports_usb = glob.glob('/dev/ttyUSB*')
+        ports = ports_acm + ports_usb
+        
+        if ports:
+            port = ports[0]
+            try:
+                self.serial_port = serial.Serial(port, 115200, timeout=1)
+                time.sleep(2) # Chờ Arduino reset
+                print(f"[ServoController] Đã kết nối Arduino tự động tại: {port}")
+            except Exception as e:
+                print(f"[Cảnh báo] Lỗi kết nối Arduino tại {port}: {e}")
+                self.serial_port = None
+        else:
+            print("[Cảnh báo] Không tìm thấy Arduino nào (ttyACM/ttyUSB). Chế độ mô phỏng (Simulation) được bật.")
 
     def set_angle(self, angle):
         """
-        Quay servo tới một góc cụ thể.
+        Quay servo tới một góc cụ thể qua Serial.
         """
         if angle < self.min_angle:
             angle = self.min_angle
         elif angle > self.max_angle:
             angle = self.max_angle
-
-        # Tính toán duty cycle dựa trên góc quay
-        duty_cycle = self.min_pulse + (float(angle - self.min_angle) / (self.max_angle - self.min_angle)) * (self.max_pulse - self.min_pulse)
-        
-        if self.pwm:
-            self.pwm.ChangeDutyCycle(duty_cycle)
-            # Chờ một khoảng thời gian nhỏ để servo tới vị trí rồi tắt xung cho đỡ rung
-            time.sleep(0.3)
-            self.pwm.ChangeDutyCycle(0) 
+            
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                val = int(float(angle))
+                self.serial_port.write(f"{val}\n".encode('utf-8'))
+                # Chờ một khoảng nhỏ để servo có thể quay tới đích (nếu cần)
+                time.sleep(0.3)
+            except Exception as e:
+                print(f"[ServoController] Lỗi gửi lệnh: {e}")
         else:
-            print(f"[Simulation] Servo quay tới {angle} độ (Duty Cycle: {duty_cycle:.2f}%)")
-
-    def scan(self, start_angle=0, end_angle=180, step=10, delay=0.5):
+            print(f"[Simulation] Servo quay tới {angle} độ")
+            
+    def scan(self, start_angle, end_angle, step=1, delay=0.05):
         """
         Chế độ quét (scan) dùng gắn camera xoay qua lại.
         Giúp quét tìm người và tránh vật cản hoặc thân MIR.
@@ -73,12 +73,11 @@ class ServoController:
 
     def cleanup(self):
         """
-        Giải phóng chân GPIO khi kết thúc chương trình.
+        Đóng cổng Serial khi kết thúc chương trình.
         """
-        if self.pwm:
-            self.pwm.stop()
-            self.GPIO.cleanup()
-            print("[ServoController] Đã thu hồi chân GPIO.")
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+            print("[ServoController] Đã đóng cổng Serial.")
 
 if __name__ == "__main__":
     # Ví dụ sử dụng:
