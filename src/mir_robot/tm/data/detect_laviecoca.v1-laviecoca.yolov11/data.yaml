@@ -1,0 +1,14 @@
+path: /home/tuanminh/mir_project/src/mir_robot/tm/data/detect_laviecoca.v1-laviecoca.yolov11
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 2
+names: ['coca', 'lavie']
+
+roboflow:
+  workspace: tuns-workspace-ipupv
+  project: detect_laviecoca
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/tuns-workspace-ipupv/detect_laviecoca/dataset/1

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Demo Nháy Mắt Đẹp</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: #1a1a1a;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    /* Toàn khuôn mặt nhấp nhô nhẹ (thở) */
+    .face-container {
+      animation: breathe 4s infinite ease-in-out;
+    }
+
+    @keyframes breathe {
+
+      0%,
+      100% {
+        transform: translateY(-5px);
+      }
+
+      50% {
+        transform: translateY(-15px);
+      }
+    }
+
+    /* --- TRẠNG THÁI HAPPY --- */
+    .face-happy {
+      transform: translateY(-10px);
+    }
+
+    /* Mắt trái (Dịch 5px sang phải) */
+    .face-happy #eye-l {
+      transform: translateX(5px);
+    }
+
+    /* Mắt phải: Hoạt ảnh nháy mắt từ tròn -> cong ^ mảnh, không bị thô */
+    .face-happy #eye-r {
+      animation: wink-to-curve 2.5s infinite;
+    }
+
+    @keyframes wink-to-curve {
+
+      0%,
+      80%,
+      100% {
+        background: white;
+        border: 0px solid transparent;
+        border-radius: 60px;
+        box-shadow: 0 0 30px rgba(255, 255, 255, 0.4);
+        height: 176px;
+        transform: translate(5px, 0);
+      }
+
+      82%,
+      95% {
+        /* Chỉ là một nét vẽ cong (^) ở giữa mắt */
+        background: transparent;
+        box-shadow: none !important;
+        /* Xóa vệt sáng viền gây ra ảo giác "lỗ đen" */
+        border: 0px solid transparent;
+        /* Loại bỏ viền 2 bên để nét vẽ dài ra kịch kim */
+        border-top: 24px solid white;
+        /* Nét vẽ cong màu trắng ở trên */
+        border-radius: 50%;
+        /* Uốn cong nét vẽ thành bán nguyệt */
+        height: 80px;
+        transform: translate(5px, 48px);
+        /* Căn đúng tâm mắt tròn */
+      }
+    }
+
+    /* Miệng chữ W: Fix lệch tâm do ảo giác quang học (bù trừ 15px + 5px = 20px sang phải) */
+    .face-happy #mouth {
+      opacity: 1;
+      top: 280px !important;
+      transform: translateX(calc(-50% + 20px)) scale(1.2) !important;
+    }
+
+    /* Gò má ửng hồng: Căn chỉnh lại cho hợp với kích thước mắt tròn */
+    .face-happy .blush {
+      opacity: 0.8;
+      top: 260px !important;
+      animation: blush-pulse 2.5s infinite ease-in-out;
+    }
+
+    .face-happy .blush:first-of-type {
+      left: 130px !important;
+    }
+
+    .face-happy .blush:last-of-type {
+      right: 130px !important;
+    }
+
+    @keyframes blush-pulse {
+
+      0%,
+      100% {
+        opacity: 0.4;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.9;
+        transform: scale(1.2);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="fixed top-5 left-5 text-white/50 font-sans z-50">
+    Thầy đã cập nhật: Mắt nháy là đường cong (^) mảnh, căn chuẩn giữa. Miệng chữ W không còn bị lệch tâm!
+  </div>
+
+  <div class="face-container relative w-[600px] h-[350px] flex items-center justify-center">
+    <!-- Khuôn mặt -->
+    <div id="face" class="face-happy relative w-full h-full flex items-center justify-center gap-[100px]">
+
+      <!-- Blush trái -->
+      <div class="blush absolute left-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md"></div>
+
+      <!-- Mắt trái (Mắt tròn giữ nguyên) -->
+      <div id="eye-l" class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative">
+      </div>
+
+      <!-- Miệng chữ W (Bắt buộc có -translate-x-1/2 của Tailwind) -->
+      <div id="mouth"
+        class="absolute top-[220px] left-1/2 -translate-x-1/2 flex items-end opacity-0 scale-50 transition-all duration-500">
+        <div
+          class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 mr-[-8px] filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">
+        </div>
+        <div
+          class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">
+        </div>
+      </div>
+
+      <!-- Blush phải -->
+      <div class="blush absolute right-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md"></div>
+
+      <!-- Mắt phải (Nháy thành ^) -->
+      <div id="eye-r" class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative">
+      </div>
+
+    </div>
+  </div>
+</body>
+
+</html>

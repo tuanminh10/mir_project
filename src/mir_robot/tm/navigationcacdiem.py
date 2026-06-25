@@ -66,7 +66,8 @@ CREDENTIALS = [
 DIEM = {
     "sac":   {"x": 21.950, "y": 15.600, "qz": 0, "qw": 1, "arrive_dist": 0.5},
     "bep":   {"x": 5.5,  "y": 17.05, "qz": 0.707, "qw": 0.707, "arrive_dist": 1.0},
-    "ban 1": {"x": 6.900, "y": 19.100, "qz": 0, "qw": 1, "arrive_dist": 0.9},
+    "ban 1": {"x": 6.900, "y": 19.000, "qz": 0, "qw": 1, "arrive_dist": 0.9},
+    "ban 2": {"x": 6.400, "y": 14.700, "qz": 0, "qw": 1, "arrive_dist": 0.9},
 }
 
 
@@ -149,6 +150,22 @@ def api_set_state(headers, state_id):
     try:
         r = requests.put(f"{API_URL}/status", headers=headers, json={"state_id": state_id}, timeout=5)
         return r.status_code == 200
+    except Exception:
+        return False
+
+
+def api_set_desired_speed(headers, speed_m_s):
+    """Thay đổi vận tốc Desired Speed (ID: 2062) của MiR."""
+    try:
+        # Ép giới hạn an toàn 0.1 m/s đến 1.5 m/s
+        speed_m_s = max(0.1, min(1.5, float(speed_m_s)))
+        url = f"{API_URL}/settings/2062"
+        data = {"value": str(speed_m_s)}
+        r = requests.put(url, headers=headers, json=data, timeout=5)
+        if r.status_code == 200:
+            print(f"  [SPEED] Đã thay đổi vận tốc MiR thành {speed_m_s} m/s")
+            return True
+        return False
     except Exception:
         return False
 

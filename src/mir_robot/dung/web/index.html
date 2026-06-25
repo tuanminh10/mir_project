@@ -1,67 +1,163 @@
 <!DOCTYPE html>
 <html lang="vi">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Menu Robot MiR</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="./vendor/roslib.min.js"></script>
   <style>
     /* CSS BIỂU CẢM KHUÔN MẶT ROBOT */
     /* 1. Trạng thái Idle (Đảo mắt, chớp mắt) */
     @keyframes look-around {
-      0%, 50%, 100% { transform: translateX(0) translateY(0); }
-      15%, 25% { transform: translateX(-40px) translateY(-10px); }
-      30%, 40% { transform: translateX(40px) translateY(-10px); }
+
+      0%,
+      50%,
+      100% {
+        transform: translateX(0) translateY(0);
+      }
+
+      15%,
+      25% {
+        transform: translateX(-40px) translateY(-10px);
+      }
+
+      30%,
+      40% {
+        transform: translateX(40px) translateY(-10px);
+      }
     }
+
     @keyframes blink {
-      0%, 90%, 100% { transform: scaleY(1); }
-      95% { transform: scaleY(0.1); }
+
+      0%,
+      90%,
+      100% {
+        transform: scaleY(1);
+      }
+
+      95% {
+        transform: scaleY(0.1);
+      }
     }
+
     @keyframes breathe {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-10px); }
+
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-10px);
+      }
     }
-    .face-idle { animation: look-around 10s infinite ease-in-out; }
-    .face-idle .eye { animation: blink 4s infinite; }
-    
-    /* 2. Trạng thái Happy (Cười, nháy mắt) */
-    .face-happy { transform: translateY(-15px); }
+
+    .face-idle {
+      animation: look-around 10s infinite ease-in-out;
+    }
+
+    .face-idle .eye {
+      animation: blink 4s infinite;
+    }
+
+    /* 2. Trạng thái Happy (2 Mắt tròn, nháy 1 mắt thành vòng cung) */
+    .face-happy {
+      transform: translateY(-10px);
+    }
+
+    /* Mắt trái (Dịch 5px sang phải) */
     .face-happy #eye-l {
-      /* Mắt trái cong lên thành hình nụ cười */
-      background: transparent;
-      box-shadow: none;
-      border: 15px solid white;
-      border-bottom: 0;
-      border-radius: 80px 80px 0 0;
-      height: 60px;
-      width: 100px;
-      transform: translateY(40px);
-      filter: drop-shadow(0 0 15px rgba(255,255,255,0.5));
+      transform: translateX(5px);
     }
+
+    /* Mắt phải: Hoạt ảnh nháy mắt từ tròn -> cong ^ */
     .face-happy #eye-r {
-      /* Mắt phải nháy (dấu >) */
-      background: transparent;
-      box-shadow: none;
-      width: 60px;
-      height: 90px;
-      border-right: 20px solid white;
-      border-top: 20px solid white;
-      border-radius: 10px;
-      transform: rotate(45deg) translateY(20px) translateX(20px);
-      filter: drop-shadow(0 0 15px rgba(255,255,255,0.5));
+      animation: wink-to-curve 2.5s infinite;
     }
-    .face-happy #mouth { opacity: 1; transform: scale(1) translateY(20px); }
-    .face-happy .blush { opacity: 0.8; }
-    
-    .face-container { animation: breathe 4s infinite ease-in-out; }
+
+    @keyframes wink-to-curve {
+
+      0%,
+      80%,
+      100% {
+        background: white;
+        border: 0px solid transparent;
+        border-radius: 60px;
+        box-shadow: 0 0 30px rgba(255, 255, 255, 0.4);
+        height: 176px;
+        transform: translate(5px, 0);
+      }
+
+      82%,
+      95% {
+        /* Chỉ là một nét vẽ cong (^) ở giữa mắt */
+        background: transparent;
+        box-shadow: none !important;
+        /* Xóa vệt sáng viền gây ra ảo giác "lỗ đen" */
+        border: 0px solid transparent;
+        /* Loại bỏ viền 2 bên để nét vẽ dài ra kịch kim */
+        border-top: 24px solid white;
+        /* Nét vẽ cong màu trắng ở trên */
+        border-radius: 50%;
+        /* Uốn cong nét vẽ thành bán nguyệt */
+        height: 80px;
+        transform: translate(5px, 48px);
+        /* Căn đúng tâm mắt tròn */
+      }
+    }
+
+    /* Miệng chữ W: Fix lệch tâm do ảo giác quang học (bù trừ 15px + 5px = 20px sang phải) */
+    .face-happy #mouth {
+      opacity: 1;
+      top: 280px !important;
+      transform: translateX(calc(-50% + 20px)) scale(1.2) !important;
+    }
+
+    /* Gò má ửng hồng: Căn chỉnh lại cho hợp với mắt tròn */
+    .face-happy .blush {
+      opacity: 0.8;
+      top: 260px !important;
+      animation: blush-pulse 2.5s infinite ease-in-out;
+    }
+
+    .face-happy .blush:first-of-type {
+      left: 130px !important;
+    }
+
+    .face-happy .blush:last-of-type {
+      right: 130px !important;
+    }
+
+    @keyframes blush-pulse {
+
+      0%,
+      100% {
+        opacity: 0.4;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.9;
+        transform: scale(1.2);
+      }
+    }
+
+    .face-container {
+      animation: breathe 4s infinite ease-in-out;
+    }
   </style>
 </head>
-<body class="h-screen overflow-hidden text-slate-800 relative" style="font-family: 'Noto Sans', 'Segoe UI', Roboto, Arial, sans-serif;">
-  <div class="fixed inset-0 z-0 bg-center bg-cover" style="background-image: url('./assets/nen.png'); filter: saturate(65%) brightness(88%);"></div>
+
+<body class="h-screen overflow-hidden text-slate-800 relative"
+  style="font-family: 'Noto Sans', 'Segoe UI', Roboto, Arial, sans-serif;">
+  <div class="fixed inset-0 z-0 bg-center bg-cover"
+    style="background-image: url('./assets/nen.png'); filter: saturate(65%) brightness(88%);"></div>
   <div class="fixed inset-0 z-0 bg-white/55"></div>
 
   <div class="relative z-10 w-full max-w-[1800px] mx-auto p-0 h-screen flex flex-col">
@@ -77,11 +173,13 @@
         </div>
 
         <div class="flex flex-col items-end gap-2">
-          <div id="ros-status" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-200 text-slate-700 text-sm md:text-base font-semibold whitespace-nowrap">
+          <div id="ros-status"
+            class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-200 text-slate-700 text-sm md:text-base font-semibold whitespace-nowrap">
             <span id="ros-status-dot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
             <span id="ros-status-text">Chưa kết nối ROSBridge</span>
           </div>
-          <div id="robot-status" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-200 text-slate-700 text-sm md:text-base font-semibold whitespace-nowrap">
+          <div id="robot-status"
+            class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-200 text-slate-700 text-sm md:text-base font-semibold whitespace-nowrap">
             <span id="robot-status-dot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
             <span id="robot-status-text">Robot thật: chưa kết nối</span>
           </div>
@@ -90,13 +188,17 @@
     </header>
 
     <main class="grid lg:grid-cols-12 gap-0 flex-1 min-h-0">
-      <section class="lg:col-span-2 bg-white/18 border-r border-white/30 h-full flex flex-col min-h-0 overflow-hidden backdrop-blur-[1px]">
-        <h2 class="text-base md:text-lg font-bold text-[#2f3f58] px-4 py-3 bg-white border-y border-[#d8dee8]">Danh mục</h2>
+      <section
+        class="lg:col-span-2 bg-white/18 border-r border-white/30 h-full flex flex-col min-h-0 overflow-hidden backdrop-blur-[1px]">
+        <h2 class="text-base md:text-lg font-bold text-[#2f3f58] px-4 py-3 bg-white border-y border-[#d8dee8]">Danh mục
+        </h2>
         <div id="category-list" class="flex-1 overflow-y-auto"></div>
       </section>
 
-      <section class="lg:col-span-7 bg-white/12 border-r border-white/30 p-4 md:p-5 h-full flex flex-col min-h-0 backdrop-blur-[1px]">
-        <div id="menu-grid" class="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 flex-1 overflow-y-auto pr-1 content-start"></div>
+      <section
+        class="lg:col-span-7 bg-white/12 border-r border-white/30 p-4 md:p-5 h-full flex flex-col min-h-0 backdrop-blur-[1px]">
+        <div id="menu-grid" class="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 flex-1 overflow-y-auto pr-1 content-start">
+        </div>
       </section>
 
       <aside class="lg:col-span-3 bg-white p-4 md:p-5 h-full flex flex-col min-h-0">
@@ -109,7 +211,9 @@
             <span id="total-price" class="text-[#a30f2d]">0đ</span>
           </div>
 
-          <button id="btn-pay" class="w-full mt-4 py-4 rounded-xl bg-[#c21734] text-white text-lg font-bold hover:bg-[#a30f2d]">THANH TOÁN</button>
+          <button id="btn-pay"
+            class="w-full mt-4 py-4 rounded-xl bg-[#c21734] text-white text-lg font-bold hover:bg-[#a30f2d]">THANH
+            TOÁN</button>
           <p id="payment-status" class="text-base text-[#6a7485] mt-2"></p>
         </div>
       </aside>
@@ -119,43 +223,62 @@
   <div id="qr-overlay" class="hidden fixed inset-0 bg-black/60 z-50 items-center justify-center p-4">
     <div class="bg-white rounded-2xl p-6 w-full max-w-xl text-center border border-[#d8dee8]">
       <p class="text-2xl font-bold text-[#a30f2d]">Quét QR để thanh toán</p>
-      <img id="qr-img" src="" alt="VietQR" class="mx-auto mt-3 border rounded-xl p-2 w-[min(78vw,420px)] h-[min(78vw,420px)] object-contain" />
+      <img id="qr-img" src="" alt="VietQR"
+        class="mx-auto mt-3 border rounded-xl p-2 w-[min(78vw,420px)] h-[min(78vw,420px)] object-contain" />
       <div class="mt-4 flex justify-center gap-2">
-        <button id="btn-confirm" class="px-4 py-2 rounded-xl bg-[#c21734] text-white font-semibold">Xác nhận đã thanh toán</button>
+        <button id="btn-confirm" class="px-4 py-2 rounded-xl bg-[#c21734] text-white font-semibold">Xác nhận đã thanh
+          toán</button>
         <button id="btn-cancel" class="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 font-semibold">Hủy</button>
       </div>
     </div>
   </div>
 
   <!-- MÀN HÌNH ĐÔI MẮT (IDLE & EXPRESSIONS) -->
-  <div id="robot-face-overlay" class="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center transition-opacity duration-700">
+  <div id="robot-face-overlay"
+    class="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center transition-opacity duration-700">
     <!-- Status ROS ở góc -->
-    <div class="absolute top-6 right-6 flex flex-col items-end gap-2 z-10 opacity-30 hover:opacity-100 transition-opacity">
-      <div id="idle-ros-status" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-800/50 text-slate-400 border border-slate-700/50 text-xs font-semibold">
+    <div
+      class="absolute top-6 right-6 flex flex-col items-end gap-2 z-10 opacity-30 hover:opacity-100 transition-opacity">
+      <div id="idle-ros-status"
+        class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-slate-800/50 text-slate-400 border border-slate-700/50 text-xs font-semibold">
         <span class="w-2 h-2 rounded-full bg-slate-500"></span> Chờ kết nối...
       </div>
     </div>
-    
+
     <!-- Face Container -->
     <div class="face-container relative w-[600px] h-[350px] flex items-center justify-center">
-      <div id="face" class="face-idle relative w-full h-full flex items-center justify-center gap-[100px] transition-all duration-500">
+      <div id="face"
+        class="face-idle relative w-full h-full flex items-center justify-center gap-[100px] transition-all duration-500">
         <!-- Blush trái -->
-        <div class="blush absolute left-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md opacity-0 transition-opacity duration-500"></div>
-        
-        <!-- Mắt trái -->
-        <div id="eye-l" class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative transition-all duration-500"></div>
-        
-        <!-- Miệng (w) -->
-        <div id="mouth" class="absolute top-[220px] left-1/2 -translate-x-1/2 flex items-end opacity-0 scale-50 transition-all duration-500">
-          <div class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 mr-[-8px] filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]"></div>
-          <div class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]"></div>
+        <div
+          class="blush absolute left-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md opacity-0 transition-opacity duration-500">
         </div>
-        
+
+        <!-- Mắt trái -->
+        <div id="eye-l"
+          class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative">
+        </div>
+
+        <!-- Miệng (w) -->
+        <div id="mouth"
+          class="absolute top-[220px] left-1/2 -translate-x-1/2 flex items-end opacity-0 scale-50 transition-all duration-500">
+          <div
+            class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 mr-[-8px] filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">
+          </div>
+          <div
+            class="w-12 h-10 border-b-[12px] border-r-[12px] border-white rounded-br-[30px] rounded-bl-[10px] transform rotate-45 filter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">
+          </div>
+        </div>
+
         <!-- Blush phải -->
-        <div class="blush absolute right-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md opacity-0 transition-opacity duration-500"></div>
+        <div
+          class="blush absolute right-[80px] top-[240px] w-20 h-8 bg-pink-500 rounded-full blur-md opacity-0 transition-opacity duration-500">
+        </div>
 
         <!-- Mắt phải -->
-        <div id="eye-r" class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative transition-all duration-500"></div>
+        <div id="eye-r"
+          class="eye w-32 h-44 bg-white rounded-[60px] shadow-[0_0_30px_rgba(255,255,255,0.4)] relative">
+        </div>
       </div>
     </div>
   </div>
@@ -262,7 +385,7 @@
       const dotEl = document.getElementById('ros-status-dot');
       const textEl = document.getElementById('ros-status-text');
       const idleEl = document.getElementById('idle-ros-status');
-      
+
       if (textEl) textEl.textContent = text;
       if (el) el.className = 'inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm md:text-base font-semibold whitespace-nowrap';
 
@@ -280,7 +403,7 @@
         if (dotEl) dotEl.className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
         idleHtml = `<span class="w-2.5 h-2.5 rounded-full bg-slate-500"></span> ${text}`;
       }
-      
+
       if (idleEl) {
         idleEl.innerHTML = idleHtml;
       }
@@ -308,7 +431,7 @@
 
     function stopRobotMonitor() {
       if (robotStatusSub) {
-        try { robotStatusSub.unsubscribe(); } catch (_) {}
+        try { robotStatusSub.unsubscribe(); } catch (_) { }
         robotStatusSub = null;
       }
       if (robotStatusTimer) {
@@ -364,7 +487,7 @@
 
       try {
         if (ros) {
-          try { ros.close(); } catch (_) {}
+          try { ros.close(); } catch (_) { }
         }
         setStatus(`Đang kết nối ROSBridge (${url})...`);
 
@@ -414,7 +537,7 @@
                 }
               }
             }
-          } catch(e) {}
+          } catch (e) { }
         });
 
         orderTopic = new ROSLIB.Topic({
@@ -461,8 +584,8 @@
         <button class="text-left border border-[#d8dee8] rounded-xl p-4 bg-white hover:bg-[#f7f9fc] min-h-[260px]" onclick="addItem('${m.name}', ${m.price})">
           <div class="relative w-full h-44 flex items-center justify-center">
             ${m.image
-              ? `<img src="${m.image}" alt="${m.name}" class="w-full h-full object-contain drop-shadow-sm" />`
-              : `<span class="text-5xl">${m.icon || '🍽️'}</span>`}
+          ? `<img src="${m.image}" alt="${m.name}" class="w-full h-full object-contain drop-shadow-sm" />`
+          : `<span class="text-5xl">${m.icon || '🍽️'}</span>`}
             <div class="absolute top-2 right-2 text-sm font-semibold text-white bg-[#a30f2d] px-2.5 py-1 rounded">${money(m.price)}</div>
           </div>
           <div class="font-semibold text-lg mt-3 leading-tight text-[#2f3f58]">${m.name}</div>
@@ -599,12 +722,12 @@
       cart = [];
       renderCart();
       closeQr();
-      
+
       // Chuyển sang biểu cảm HAPPY (Nháy mắt, cười)
       document.getElementById('robot-face-overlay').classList.remove('hidden');
       document.getElementById('robot-face-overlay').style.opacity = '1';
       setExpression('happy');
-      
+
       // Chờ 4 giây rồi tự động quay về trạng thái MẮT IDLE
       setTimeout(() => {
         window.location.href = "?";
@@ -626,4 +749,5 @@
     connectRos();
   </script>
 </body>
+
 </html>
