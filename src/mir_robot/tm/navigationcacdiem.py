@@ -66,8 +66,10 @@ CREDENTIALS = [
 DIEM = {
     "sac":   {"x": 21.950, "y": 15.600, "qz": 0, "qw": 1, "arrive_dist": 0.5},
     "bep":   {"x": 5.5,  "y": 17.05, "qz": 0.707, "qw": 0.707, "arrive_dist": 1.0},
-    "ban 1": {"x": 6.900, "y": 19.000, "qz": 0, "qw": 1, "arrive_dist": 0.9},
-    "ban 2": {"x": 6.400, "y": 14.700, "qz": 0, "qw": 1, "arrive_dist": 0.9},
+    "ban 1": {"x": 6.700, "y": 18.940, "qz": 0, "qw": 1, "arrive_dist": 0.9},
+    "ban 2": {"x": 13.500, "y": 14.780, "qz": 1.0, "qw": 0.0, "arrive_dist": 0.9},
+    "ban 3": {"x": 14.100, "y": 17.400, "qz": 0, "qw": 1, "arrive_dist": 0.9},
+    "ban 4": {"x": 14.000, "y": 14.300, "qz": 0, "qw": 1, "arrive_dist": 0.9}
 }
 
 

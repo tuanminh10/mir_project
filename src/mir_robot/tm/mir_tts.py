@@ -21,21 +21,26 @@ def generate_tts_wav(text: str, output_wav_path: str):
     """
     # 1. Xử lý các từ tiếng Anh để Google dễ đọc
     text_fixed = text.replace("order", "o đờ").replace("coca", "cô ca").replace("lavie", "la vi").replace("Menu", "me nu").replace("timeout", "thai mao").replace("reset", "ri sét")
-    print(f"[TTS] Đang tổng hợp giọng nói Google cho: '{text_fixed}'...")
+    # print(f"[TTS] Đang tổng hợp giọng nói Google cho: '{text_fixed}'...")
     
-    # 2. Sinh giọng nói Google
-    tts = gTTS(text=text_fixed, lang='vi', slow=False)
-    
-    # Ghi ra file (gTTS mặc định là mp3, nhưng MiR có thể đọc được base64 của file này)
-    tts.save(output_wav_path)
-    print(f"[TTS] Đã lưu file âm thanh (Google Voice) tại: {output_wav_path}")
+    try:
+        # 2. Sinh giọng nói Google
+        tts = gTTS(text=text_fixed, lang='vi', slow=False)
+        
+        # Ghi ra file (gTTS mặc định là mp3, nhưng MiR có thể đọc được base64 của file này)
+        tts.save(output_wav_path)
+        # print(f"[TTS] Đã lưu file âm thanh (Google Voice) tại: {output_wav_path}")
+        return True
+    except Exception as e:
+        print(f"[TTS] ❌ Không thể tạo giọng nói Google (Kiểm tra lại kết nối Internet): {e}")
+        return False
 
 
 def upload_sound_to_mir(headers: dict, wav_path: str, sound_name: str) -> str:
     """
     Upload file WAV lên MiR (base64 encoded) và trả về sound_guid
     """
-    print(f"[MiR] Đang tải {wav_path} lên MiR ...")
+    # print(f"[MiR] Đang tải {wav_path} lên MiR ...")
     
     with open(wav_path, "rb") as audio_file:
          encoded_string = base64.b64encode(audio_file.read()).decode("utf-8")
@@ -52,7 +57,7 @@ def upload_sound_to_mir(headers: dict, wav_path: str, sound_name: str) -> str:
         for s in r.json():
             if s.get("name") == sound_name:
                 requests.delete(f"{nav.API_URL}/sounds/{s['guid']}", headers=headers, timeout=3)
-                print(f"[MiR] Đã xoá sound cũ: {sound_name}")
+                # print(f"[MiR] Đã xoá sound cũ: {sound_name}")
     except Exception:
         pass
 
@@ -62,7 +67,7 @@ def upload_sound_to_mir(headers: dict, wav_path: str, sound_name: str) -> str:
         raise Exception(f"Upload sound failed: {resp.status_code} - {resp.text}")
     
     sound_guid = resp.json()["guid"]
-    print(f"[MiR] Tải lên thành công! Sound GUID: {sound_guid}")
+    # print(f"[MiR] Tải lên thành công! Sound GUID: {sound_guid}")
     return sound_guid
 
 
@@ -70,7 +75,7 @@ def play_sound_on_mir(headers: dict, sound_guid: str, volume: int = 100):
     """
     Kích hoạt phát âm thanh sử dụng hệ thống Mission Queue
     """
-    print("[MiR] Khởi tạo lệnh phát âm thanh (Play Sound)...")
+    # print("[MiR] Khởi tạo lệnh phát âm thanh (Play Sound)...")
     
     # 1. Tạo một Mission ảo (chỉ tồn tại để chứa action Play Sound)
     mission_payload = {
@@ -99,7 +104,7 @@ def play_sound_on_mir(headers: dict, sound_guid: str, volume: int = 100):
         return
         
     # 3. Đẩy Mission này lên cùng lên Mission Queue của MiR
-    print("[MiR] Thêm lệnh nói vào Queue ...")
+    # print("[MiR] Thêm lệnh nói vào Queue ...")
     queue_payload = {"mission_id": mission_guid}
     resp = requests.post(f"{nav.API_URL}/mission_queue", json=queue_payload, headers=headers, timeout=5)
     if resp.status_code not in (200, 201):
@@ -120,7 +125,9 @@ def speak_on_mir(text: str):
     wav_filename = "/tmp/temp_tts.wav"
     
     # B1: Chuyển văn bản thành giọng nói (WAV)
-    generate_tts_wav(text, wav_filename)
+    success = generate_tts_wav(text, wav_filename)
+    if not success:
+        return
     
     # B2: Tải lên MiR
     sound_guid = upload_sound_to_mir(headers, wav_filename, "tts_temp_voice")

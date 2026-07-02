@@ -70,6 +70,7 @@ void publishTableButtonPressed() {
   payloadDoc["event"] = "button_pressed";
   payloadDoc["source"] = "esp32";
   payloadDoc["seq"] = ++sequenceNo;
+  payloadDoc["ts"] = millis();
 
   String payload;
   serializeJson(payloadDoc, payload);

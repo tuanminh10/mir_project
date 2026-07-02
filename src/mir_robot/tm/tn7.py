@@ -764,17 +764,17 @@ class VideoThread(QThread):
                                             else:
                                                 print(f"[SMART NAV] Ổn định tọa độ bằng Segmentation + PointCloud (Z_raw={z_opt:.3f}m, X={-x_opt:.3f}m)")
                                                 
-                                                # CHẾ ĐỘ TẦM XA (FAR MODE): Khử sai số quang học của RealSense
-                                                if z_opt > 3.0:
-                                                    z_raw = z_opt
-                                                    z_opt = z_raw - (z_raw - 3.0) * 0.15
-                                                    x_opt = x_opt * (z_opt / z_raw)
-                                                    print(f"[FAR MODE] Kích hoạt bù trừ Tầm Xa >3m: Z giảm còn {z_opt:.3f}m")
-                                                
                                                 pitch_rad = math.radians(20.0)
                                                 forward_m_camera = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
                                                 forward_m = forward_m_camera + 0.00 - 0.475 
                                                 left_m = -x_opt
+                                                
+                                                # HIỆU CHUẨN THỰC NGHIỆM: Hàm bù trừ Bậc 2 (Polynomial Fit)
+                                                if forward_m > 2.5:
+                                                    fwd_raw = forward_m
+                                                    forward_m = -0.042954 * fwd_raw**2 + 1.057498 * fwd_raw + 0.111814
+                                                    left_m = left_m * (forward_m / fwd_raw)
+                                                    print(f"[CALIBRATION] Bù trừ thực nghiệm: Fwd {fwd_raw:.3f}→{forward_m:.3f}m | Left scale: x{forward_m/fwd_raw:.2f}")
                                                 pc_success = True
                                             
                                     if not pc_success:
@@ -814,17 +814,17 @@ class VideoThread(QThread):
                                                 else:
                                                     print(f"[SMART NAV] Ổn định tọa độ bằng BBox + PointCloud (Z_raw={z_opt:.3f}m, X={-x_opt:.3f}m)")
                                                     
-                                                    # CHẾ ĐỘ TẦM XA (FAR MODE): Khử sai số quang học của RealSense
-                                                    if z_opt > 3.0:
-                                                        z_raw = z_opt
-                                                        z_opt = z_raw - (z_raw - 3.0) * 0.15
-                                                        x_opt = x_opt * (z_opt / z_raw)
-                                                        print(f"[FAR MODE] Kích hoạt bù trừ Tầm Xa >3m: Z giảm còn {z_opt:.3f}m")
-                                                    
                                                     pitch_rad = math.radians(20.0)
                                                     forward_m_camera = z_opt * math.cos(pitch_rad) - y_opt * math.sin(pitch_rad)
                                                     forward_m = forward_m_camera + 0.00 - 0.475
                                                     left_m = -x_opt
+                                                    
+                                                    # HIỆU CHUẨN THỰC NGHIỆM: Hàm bù trừ Bậc 2 (Polynomial Fit)
+                                                    if forward_m > 2.5:
+                                                        fwd_raw = forward_m
+                                                        forward_m = -0.042954 * fwd_raw**2 + 1.057498 * fwd_raw + 0.111814
+                                                        left_m = left_m * (forward_m / fwd_raw)
+                                                        print(f"[CALIBRATION] Bù trừ thực nghiệm: Fwd {fwd_raw:.3f}→{forward_m:.3f}m | Left scale: x{forward_m/fwd_raw:.2f}")
                                                     pc_success = True
                                                 
                                     if not pc_success:
@@ -855,7 +855,10 @@ class VideoThread(QThread):
                                     try:
                                         self.tf_listener.waitForTransform("/map", "base_link", rospy.Time(0), rospy.Duration(2.0))
                                         pt = self.tf_listener.transformPoint("/map", msg)
-                                        # Gọi target_locked_signal để TestPCApp gọi calculate_hybrid_safe_goal
+                                        
+                                        print(f"\n[MAP TRANSFORM] 🎯 Tọa độ Khách Hàng (Đã hiệu chuẩn) trên Map: X={pt.point.x:.3f}, Y={pt.point.y:.3f}")
+                                        
+                                        # Gọi target_locked_signal để MainApp gọi calculate_hybrid_safe_goal
                                         self.target_locked_signal.emit(pt.point.x, pt.point.y, None) # Không dùng obs_pt_map
                                         self.robot_state = "MOVING"
                                     except Exception as e:
@@ -953,6 +956,10 @@ class MainApp(QMainWindow):
         self.charging_cancel_event = threading.Event()
         self.target_locked_coords = None
         self.nav_arrived_event = threading.Event()
+        
+        # Biến đếm và lưu timestamp cho TN7
+        self.tn7_vong = 0
+        self.tn7_t = [0] * 9
 
         try:
             self.servo = dongco.ServoController(pin=18, min_angle=0, max_angle=180)
@@ -978,6 +985,7 @@ class MainApp(QMainWindow):
         self.video_thread.start()
 
         self.pub_arrived = rospy.Publisher('/robot_arrived_table', String, queue_size=10)
+
 
         rospy.Subscriber("/map", OccupancyGrid, self.map_callback)
         rospy.Subscriber('/robot_pose', Pose, self.pose_callback)
@@ -1038,6 +1046,7 @@ class MainApp(QMainWindow):
 
     def on_guest_call(self, msg):
         try:
+            self.tn7_t[1] = time.time() # t1: Nhận lệnh ESP32
             data = json.loads(msg.data)
             ban = str(data.get("ban")).strip()
             if ban.isdigit(): ban = f"ban {ban}"
@@ -1092,7 +1101,7 @@ class MainApp(QMainWindow):
         print(f"[VERIFY TRAY] Bắt đầu gọi hàm verify_tray. YOLO loaded? {self.laptop_yolo is not None}")
         if not self.laptop_yolo: 
             print("[VERIFY TRAY] YOLO bị lỗi hoặc chưa tải được. Bỏ qua kiểm tra!")
-            return True
+            return True, ""
         
         self.video_thread.pause_emit = True # Chặn VideoThread tự update GUI
         start = time.time()
@@ -1140,10 +1149,12 @@ class MainApp(QMainWindow):
                     
                     now = time.time()
                     
+                    required_dur = 5.0
+                    
                     if is_condition_met:
                         if success_start is None: success_start = now
                         success_dur = now - success_start
-                        cv2.putText(annotated_frame, f"XAC NHAN: {success_dur:.1f}s / 5.0s", (20, 170), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+                        cv2.putText(annotated_frame, f"XAC NHAN: {success_dur:.1f}s / {required_dur}s", (20, 170), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
                     else:
                         success_start = None
                         success_dur = 0
@@ -1158,16 +1169,15 @@ class MainApp(QMainWindow):
                             print(f"[VERIFY TRAY] 📷 Đang kiểm tra đồ uống: Coca {coca}/{ec} | Lavie {lavie}/{el}")
                         last_print_time = now
         
-                    if success_dur >= 5.0:
-                        if check_empty: print(f"[VERIFY TRAY] ✅ KHÁCH ĐÃ LẤY HẾT ĐỒ (5s)! Tắt AI quét nước.")
-                        else: print(f"[VERIFY TRAY] ✅ ĐỒ UỐNG ĐÃ ĐỦ (5s)! Tắt AI quét nước.")
-                        return True
+                    if success_dur >= required_dur:
+                        if check_empty: print(f"[VERIFY TRAY] ✅ KHÁCH ĐÃ LẤY HẾT ĐỒ ({required_dur}s)! Tắt AI quét nước.")
+                        else: print(f"[VERIFY TRAY] ✅ ĐỒ UỐNG ĐÃ ĐỦ ({required_dur}s)! Tắt AI quét nước.")
+                        return True, ""
                     if time.time() - start > timeout:
                         import threading
                         if check_empty:
-                            print("[VERIFY TRAY] ❌ Quá thời gian khách chưa lấy đồ, nhắc nhở khách!")
+                            print(f"[VERIFY TRAY] ❌ Quá {timeout}s khách chưa lấy đồ, nhắc nhở khách!")
                             threading.Thread(target=mir_tts.speak_on_mir, args=("Hình như bạn quên lấy đồ, xin vui lòng kiểm tra lại khay.",)).start()
-                            start = time.time() # Reset bộ đếm
                         else:
                             msg_parts = []
                             if coca < ec: msg_parts.append(f"thiếu {ec - coca} cô ca")
@@ -1176,9 +1186,11 @@ class MainApp(QMainWindow):
                             if lavie < el: msg_parts.append(f"thiếu {el - lavie} la vi")
                             elif lavie > el: msg_parts.append(f"thừa {lavie - el} la vi")
                             
-                            speak_msg = "Hình như trên khay đang " + " và ".join(msg_parts) + ", xin vui lòng kiểm tra lại."
+                            speak_msg = "Trên khay đang " + " và ".join(msg_parts) + ", xin vui lòng kiểm tra lại."
                             print(f"[VERIFY TRAY] ❌ Quá {timeout}s chưa đủ đồ: {speak_msg}")
                             threading.Thread(target=mir_tts.speak_on_mir, args=(speak_msg,)).start()
+                            
+                        start = time.time() # Reset bộ đếm
                         
                     time.sleep(0.05)
                 except Exception as loop_e:
@@ -1190,7 +1202,7 @@ class MainApp(QMainWindow):
             self.video_thread.pause_emit = False
             
         print("[VERIFY TRAY] ❌ Đã bị hủy bỏ!")
-        return False
+        return False, "Đã bị hủy bỏ"
 
     def worker_loop(self):
         print("[WORKER] Khởi tạo YOLO trong luồng nền để tránh lỗi CUDA deadlock...")
@@ -1225,11 +1237,18 @@ class MainApp(QMainWindow):
         ttype, target = task["type"], task["target"]
         
         if ttype == "GUEST_CALL":
+            self.tn7_vong += 1
+            print(f"\n===========================================")
+            print(f"[TN7] BẮT ĐẦU VÒNG {self.tn7_vong} (Khách gọi từ {target})")
+            print(f"===========================================")
+            
             nav.api_set_desired_speed(self.mir_headers, 1.0)
             mir_tts.speak_on_mir(f"Đã nhận lệnh gọi từ {get_vn_name(target)}, xe đang di chuyển tới.")
             if self.servo: self.servo.set_angle(95)
             ok = self.move_to_static_goal(target, cancel_event=cancel_event)
             if not ok: return
+            
+            self.tn7_t[2] = time.time() # t2: Tới khu vực bàn
             
             if self.servo: self.servo.set_angle(95)
             mir_tts.speak_on_mir("Xin chào quý khách, khách nào order thì giơ tay lên.")
@@ -1242,9 +1261,14 @@ class MainApp(QMainWindow):
                 self.video_thread.is_scanning_for_hand = False
                 tx, ty, obj = self.target_locked_coords
                 
+                self.tn7_t[3] = time.time() # t3: AI khóa tay thành công
+                
                 self.nav_arrived_event.clear()
+                nav.api_set_desired_speed(self.mir_headers, 0.3)
                 self.calculate_hybrid_safe_goal(tx, ty, obj, mode="ORDER")
                 self.nav_arrived_event.wait()
+                
+                self.tn7_t[4] = time.time() # t4: Smart Goal đỗ xong
                 
                 self.current_location = "specific_" + target
                 self.saved_locations[target] = {"tx": tx, "ty": ty, "obj": obj}
@@ -1257,6 +1281,8 @@ class MainApp(QMainWindow):
                 self.wait_event.wait() 
                 self.wait_event.clear()
                 
+                self.tn7_t[5] = time.time() # t5: Đã order xong
+                
                 mir_tts.speak_on_mir("Đã nhận order, xe xin phép rời đi.")
             else:
                 self.video_thread.is_scanning_for_hand = False
@@ -1267,6 +1293,37 @@ class MainApp(QMainWindow):
             mir_tts.speak_on_mir("Robot đang quay về vị trí sạc.")
             if self.servo: self.servo.set_angle(95)
             self.move_to_static_goal("sac", cancel_event=cancel_event)
+            
+            self.tn7_t[8] = time.time() # t8: Đã về sạc thành công
+            
+            # CHỐT SỔ VÒNG NÀY VÀ GHI CSV
+            if self.tn7_t[1] > 0 and self.tn7_t[8] > self.tn7_t[1]:
+                nav_s = self.tn7_t[2] - self.tn7_t[1]
+                ai_s = self.tn7_t[3] - self.tn7_t[2]
+                goal_s = self.tn7_t[4] - self.tn7_t[3]
+                order_s = self.tn7_t[5] - self.tn7_t[4]
+                bep_s = self.tn7_t[6] - self.tn7_t[5]
+                giao_s = self.tn7_t[7] - self.tn7_t[6]
+                sac_s = self.tn7_t[8] - self.tn7_t[7]
+                tong_m = (self.tn7_t[8] - self.tn7_t[1]) / 60.0
+                
+                print(f"\n===========================================")
+                print(f"[TN7 KẾT QUẢ] VÒNG {self.tn7_vong} HOÀN TẤT")
+                print(f"  Nav: {nav_s:.1f}s | AI: {ai_s:.1f}s | SmartGoal: {goal_s:.1f}s | Order: {order_s:.1f}s")
+                print(f"  Bếp: {bep_s:.1f}s | Giao: {giao_s:.1f}s | Sạc: {sac_s:.1f}s")
+                print(f"  TỔNG THỜI GIAN: {tong_m:.2f} phút")
+                print(f"===========================================\n")
+                
+                import os
+                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tn7.csv")
+                file_exists = os.path.exists(csv_path)
+                with open(csv_path, "a") as f:
+                    if not file_exists:
+                        f.write("vong,t_iot,t_nav,t_ai_lock,t_smart_goal,t_order,t_bep_verify,t_giao,t_ve_sac,tong_phut\n")
+                    f.write(f"{self.tn7_vong},0.13,{nav_s:.2f},{ai_s:.2f},{goal_s:.2f},{order_s:.2f},{bep_s:.2f},{giao_s:.2f},{sac_s:.2f},{tong_m:.2f}\n")
+                
+                # Reset mảng thời gian
+                self.tn7_t = [0] * 9
 
         elif ttype == "KITCHEN_CALL":
             nav.api_set_desired_speed(self.mir_headers, 1.0)
@@ -1286,12 +1343,14 @@ class MainApp(QMainWindow):
             exp_lavie = self.active_orders.get(target, {}).get("lavie", 0)
             
             mir_tts.speak_on_mir("Đang kiểm tra đồ uống trên khay.")
-            has_items = self.verify_tray(exp_coca, exp_lavie, cancel_event=cancel_event, timeout=30.0)
+            has_items, _ = self.verify_tray(exp_coca, exp_lavie, cancel_event=cancel_event, timeout=20.0)
             
             if cancel_event and cancel_event.is_set(): return
             
+            self.tn7_t[6] = time.time() # t6: Bếp đã lên đủ đồ (YOLO verify xong)
+            
             mir_tts.speak_on_mir(f"Đồ uống đã đủ, robot bắt đầu đi giao tới {get_vn_name(target)}.")
-            nav.api_set_desired_speed(self.mir_headers, 0.4)
+            nav.api_set_desired_speed(self.mir_headers, 0.3)
                 
             if self.servo: self.servo.set_angle(95)
             
@@ -1308,7 +1367,9 @@ class MainApp(QMainWindow):
                     tx, ty = deliver_data
                     self.nav_arrived_event.clear()
                     self.calculate_hybrid_safe_goal(tx, ty, None, mode="DELIVER")
-                    self.nav_arrived_event.wait(timeout=90)
+                    while not self.nav_arrived_event.is_set():
+                        if cancel_event and cancel_event.is_set(): return
+                        time.sleep(0.5)
                 self.current_location = "specific_" + target
             else:
                 ok = self.move_to_static_goal(target, cancel_event=cancel_event)
@@ -1326,6 +1387,8 @@ class MainApp(QMainWindow):
                 if is_empty: break
                 if i < 2: mir_tts.speak_on_mir("Quý khách vui lòng lấy hết đồ uống trên khay để robot tiếp tục làm việc.")
             
+            self.tn7_t[7] = time.time() # t7: Khách đã lấy xong đồ
+            
             if self.servo: self.servo.set_angle(95)
             
             if is_empty: 
@@ -1337,9 +1400,22 @@ class MainApp(QMainWindow):
             self.active_orders.pop(target, None)
             self.cleanup_temp_positions()
 
-    def calculate_hybrid_safe_goal(self, target_x, target_y, obs_pt_map=None, min_dist_m=0.50, attempt=0, mode="ORDER"):
+    def calculate_hybrid_safe_goal(self, target_x, target_y, obs_pt_map=None, min_dist_m=0.95, attempt=0, mode="ORDER"):
         if not self.map_label.map_info or self.map_label.robot_px is None:
             return
+        
+        # Guard rails: tránh mục tiêu đỗ bị đẩy ra quá xa do retry tích lũy.
+        if mode == "DELIVER":
+            min_dock_dist_m = 0.6
+            min_dist_m = 0.6
+        else:
+            min_dock_dist_m = 0.95
+        max_dock_dist_m = 2.00
+        safety_backoff_m = 0.10
+        raw_min_dist_m = float(min_dist_m)
+        min_dist_m = max(min_dock_dist_m, min(max_dock_dist_m, raw_min_dist_m))
+        if abs(min_dist_m - raw_min_dist_m) > 1e-6:
+            print(f"[SMART NAV] ⚠️ min_dist_m={raw_min_dist_m:.2f}m vượt ngưỡng, kẹp về {min_dist_m:.2f}m")
             
         res = self.map_label.map_info.resolution
         ox = self.map_label.map_info.origin.position.x
@@ -1364,7 +1440,10 @@ class MainApp(QMainWindow):
             obs_px_y = int((obs_pt_map[1] - oy) / res)
             self.map_label.obs3d_px = (obs_px_x, h - obs_px_y - 1)
             if 0 <= obs_px_x < w and 0 <= obs_px_y < h:
-                radius_px = int(0.15 / res)
+                if mode == "DELIVER":
+                    radius_px = int(0.10 / res)
+                else:
+                    radius_px = int(0.15 / res)
                 cv2.circle(combined_obs, (obs_px_x, obs_px_y), radius_px, 255, -1)
                 cv2.circle(raycast_obs, (obs_px_x, obs_px_y), radius_px, 255, -1)
         else: self.map_label.obs3d_px = None
@@ -1378,7 +1457,14 @@ class MainApp(QMainWindow):
                     cv2.circle(combined_obs, (obs_px_x, obs_px_y), radius_px, 255, -1)
                     cv2.circle(raycast_obs, (obs_px_x, obs_px_y), radius_px, 255, -1)
 
-        inflate_m = 0.15
+
+        # Giáo sư Antigravity: Tăng mạnh inflate_m lên 0.35m (thay vì 0.25m) để bao trùm luôn cả 
+        # phần khung ghế sắt bên dưới mà LiDAR không nhìn thấy (do quá thấp).
+        # Tuy nhiên đối với DELIVER thì chỉ cần 0.2m
+        if mode == "DELIVER":
+            inflate_m = 0.20
+        else:
+            inflate_m = 0.35
         inflate_px = max(1, int(inflate_m / res))
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*inflate_px+1, 2*inflate_px+1))
         inflated_obs = cv2.dilate(combined_obs, kernel, iterations=1)
@@ -1395,7 +1481,8 @@ class MainApp(QMainWindow):
                 cx = int(px_t + step * math.cos(rad))
                 cy = int(py_t + step * math.sin(rad))
                 if not (0 <= cx < w and 0 <= cy < h): break
-                if self.map_label.map_data[cy, cx] == 0: free_count += 1
+                if raycast_obs[cy, cx] > 0: break  
+                elif self.map_label.map_data[cy, cx] == 0: free_count += 1
                 elif self.map_label.map_data[cy, cx] == 100: break
             best_rays.append((rad, free_count))
             
@@ -1423,37 +1510,63 @@ class MainApp(QMainWindow):
             self.last_theta_dock = None
             
         def get_min_dist_for_angle(test_theta):
-            if attempt > 0 and hasattr(self, 'last_theta_dock') and self.last_theta_dock is not None:
-                # Nếu góc test giống với góc vừa bị kẹt (sai số < 10 độ)
-                diff = abs((test_theta - self.last_theta_dock + math.pi) % (2 * math.pi) - math.pi)
-                if diff < math.radians(10):
-                    return min_dist_m # Kế thừa khoảng cách lùi xa
-            return 0.50 # Nếu đổi sang góc mới, tự động reset về 0.50m (đỗ sát khách nhất)
+            # NẾU ĐÃ BỊ KẸT (attempt > 0): Chỉ ép lùi xa đối với góc vừa gây ra lỗi (last_theta_dock)
+            if attempt > 0 and self.last_theta_dock is not None:
+                if abs(test_theta - self.last_theta_dock) < 0.1:
+                    return min_dist_m
+            # Góc còn lại (chưa từng bị kẹt) hoặc lần đầu tiên chạy: Cho phép dò từ sát khách hàng nhất
+            return min_dock_dist_m
         
-        def test_path(theta_dock_test, yaw_test, test_min_dist_m=0.50):
-            test_min_step = int(max(0.50, test_min_dist_m) / res)
-            for step in range(test_min_step, max_ray_len):
+        def test_path(theta_dock_test, yaw_test, test_min_dist_m=0.95):
+            test_min_step = int(max(min_dock_dist_m, test_min_dist_m) / res)
+            max_test_step = int(max_dock_dist_m / res) # Giới hạn không cho chọn goal quá xa khách
+            
+            # Giáo sư Antigravity: Test cả 3 góc (yaw chuẩn, yaw + 45, yaw - 45) để đảm bảo đầu xe không quệt vào ghế khi bẻ lái
+            test_yaws = [yaw_test, yaw_test + math.radians(45), yaw_test - math.radians(45)]
+            
+            for step in range(test_min_step, max_test_step):
                 cx = int(px_t + step * math.cos(theta_dock_test))
                 cy = int(py_t + step * math.sin(theta_dock_test))
                 if not (0 <= cx < w and 0 <= cy < h): break
-                pts = []
-                for dx, dy in fp_m:
-                    rx = (dx * math.cos(yaw_test) - dy * math.sin(yaw_test)) / res
-                    ry = (dx * math.sin(yaw_test) + dy * math.cos(yaw_test)) / res
-                    pts.append([int(cx + rx), int(cy + ry)])
-                pts = np.array(pts, np.int32).reshape((-1, 1, 2))
-                x_min, y_min = np.min(pts, axis=0)[0]
-                x_max, y_max = np.max(pts, axis=0)[0]
-                x_min = max(0, x_min); y_min = max(0, y_min)
-                x_max = min(w-1, x_max); y_max = min(h-1, y_max)
-                if x_min >= x_max or y_min >= y_max: continue
-                roi = inflated_obs[y_min:y_max+1, x_min:x_max+1]
-                local_pts = pts - np.array([x_min, y_min])
-                mask = np.zeros_like(roi)
-                cv2.fillPoly(mask, [local_pts], 255)
-                if not np.any((roi > 0) & (mask > 0)): return step, pts
+                
+                all_clear = True
+                best_pts = None
+                
+                for tyaw in test_yaws:
+                    pts = []
+                    for dx, dy in fp_m:
+                        rx = (dx * math.cos(tyaw) - dy * math.sin(tyaw)) / res
+                        ry = (dx * math.sin(tyaw) + dy * math.cos(tyaw)) / res
+                        pts.append([int(cx + rx), int(cy + ry)])
+                    pts = np.array(pts, np.int32).reshape((-1, 1, 2))
+                    
+                    x_min, y_min = np.min(pts, axis=0)[0]
+                    x_max, y_max = np.max(pts, axis=0)[0]
+                    x_min = max(0, x_min); y_min = max(0, y_min)
+                    x_max = min(w-1, x_max); y_max = min(h-1, y_max)
+                    
+                    if x_min >= x_max or y_min >= y_max: 
+                        all_clear = False
+                        break
+                        
+                    roi = inflated_obs[y_min:y_max+1, x_min:x_max+1]
+                    local_pts = pts - np.array([x_min, y_min])
+                    mask = np.zeros_like(roi)
+                    cv2.fillPoly(mask, [local_pts], 255)
+                    
+                    if np.any((roi > 0) & (mask > 0)):
+                        all_clear = False
+                        break
+                        
+                    if tyaw == yaw_test:
+                        best_pts = pts
+                        
+                if all_clear:
+                    return step, best_pts
             return None, None
 
+        # ORDER MODE: SỬ DỤNG TIA 45 ĐỘ ĐỂ ĐỖ CHÉO
+        # =========================================================================
         yaw_o_left = (theta_left - math.pi + math.pi) % (2 * math.pi) - math.pi
         step_left, pts_left = test_path(theta_left, yaw_o_left, get_min_dist_for_angle(theta_left))
         yaw_o_right = (theta_right - math.pi + math.pi) % (2 * math.pi) - math.pi
@@ -1466,49 +1579,54 @@ class MainApp(QMainWindow):
             else: theta_dock = theta_right; target_step = step_right
         elif step_left is not None: theta_dock = theta_left; target_step = step_left
         elif step_right is not None: theta_dock = theta_right; target_step = step_right
-        else: theta_dock = theta_left; target_step = int(0.50 / res)
+        else: 
+            print("[SMART NAV] ⚠️ Không tìm được footprint hợp lệ ở các góc 45 độ; dùng khoảng cách tối thiểu để tránh treo.")
+            theta_dock = theta_left; target_step = int(min_dock_dist_m / res)
             
-        # Giáo sư Antigravity: Đổi hướng tiếp cận trực diện từ sau lưng (theta_open)
-        theta_d_left = theta_open 
-        theta_d_right = theta_open
+        # =========================================================================
+        # DELIVER MODE: ĐÂM THẲNG VÀO LƯNG KHÁCH, XOAY NGANG 0/180 VÀ LÙI 0.3M
+        # =========================================================================
+        # 1. Đâm thẳng vào sau lưng khách (hướng theta_open)
+        theta_dock_d = theta_open
         
-        def get_deliver_yaw(dock_rad):
-            # Tính Yaw dựa trên hướng vuông góc với hướng tiếp cận để xe đỗ ngang (0 hoặc 180)
-            perp_deg = math.degrees(dock_rad) + 90
-            best_yaw = min([0, 180], key=lambda a: abs((a - perp_deg + 180) % 360 - 180))
-            return math.radians(best_yaw)
+        # 2. Xoay ngang xe (yaw 0 hoặc 180 độ)
+        # Lấy yaw 0 hoặc 180 sao cho hông xe quay về phía khách (tức là vuông góc với hướng đâm vào)
+        perp_deg = math.degrees(theta_open) + 90
+        best_yaw_deg = min([0, 180], key=lambda a: abs((a - perp_deg + 180) % 360 - 180))
+        yaw_d = math.radians(best_yaw_deg)
+        
+        # 3. Test tia đâm thẳng để tìm cự ly an toàn
+        step_d, _ = test_path(theta_dock_d, yaw_d, get_min_dist_for_angle(theta_dock_d))
+        if step_d is not None:
+            target_step_d = step_d
+        else:
+            print("[SMART NAV] ⚠️ DELIVER mode: Kẹt hướng thẳng, dùng khoảng cách tối thiểu.")
+            target_step_d = int(min_dock_dist_m / res)
             
-        yaw_d_left = get_deliver_yaw(theta_d_left)
-        yaw_d_right = yaw_d_left 
+        final_step_d = target_step_d
         
-        step_d_left, _ = test_path(theta_d_left, yaw_d_left, get_min_dist_for_angle(theta_d_left))
-        step_d_right = step_d_left
+        # Tính tọa độ điểm đỗ thẳng (chưa lùi)
+        px_final_d_raw = px_t + final_step_d * math.cos(theta_dock_d)
+        py_final_d_raw = py_t + final_step_d * math.sin(theta_dock_d)
         
-        if step_d_left is None:
-            step_d_left = int(get_min_dist_for_angle(theta_d_left) / res)
+        # 4. Tự lùi 0.3m theo phương yaw_d để khách dễ lấy đồ
+        shift_m = 0.3
+        px_final_d = px_final_d_raw - (shift_m / res) * math.cos(yaw_d)
+        py_final_d = py_final_d_raw - (shift_m / res) * math.sin(yaw_d)
         
-        theta_dock_d = theta_d_left; target_step_d = step_d_left; yaw_d = yaw_d_left
-            
-        # Giáo sư Antigravity: Giảm lùi an toàn để xe lết vào sát lưng hơn
-        final_step_d = (target_step_d * res + 0.02) / res
-        px_x_d = int(px_t + final_step_d * math.cos(theta_dock_d))
-        px_y_d = int(py_t + final_step_d * math.sin(theta_dock_d))
-        
-        # Tiến/lùi xe dọc theo phương YAW (0 hoặc 180 độ) để tịnh tiến xe sang trái/phải khách
-        shift_m = -0.30 # Lùi cực mạnh 0.30m để khay xe lọt hẳn vào tầm nhìn của khách
-        px_x_d += int((shift_m * math.cos(yaw_d)) / res)
-        px_y_d += int((shift_m * math.sin(yaw_d)) / res)
+        x_final_d = ox + px_final_d * res
+        y_final_d = oy + py_final_d * res
         q_d = tf.transformations.quaternion_from_euler(0, 0, yaw_d)
         
         self.last_calculated_deliver_diem = {
-            "x": ox + px_x_d * res, 
-            "y": oy + px_y_d * res, 
+            "x": x_final_d, 
+            "y": y_final_d, 
             "qz": q_d[2], 
             "qw": q_d[3], 
             "arrive_dist": 0.15
         }
         
-        self.map_label.deliver_px = (px_x_d, h - px_y_d - 1)
+        self.map_label.deliver_px = (int(px_final_d), h - int(py_final_d) - 1)
         self.map_label.deliver_yaw = yaw_d
         
         yaw = theta_dock - math.pi 
@@ -1523,7 +1641,8 @@ class MainApp(QMainWindow):
 
             
         target_dist_m = target_step * res
-        target_dist_m += 0.10 # Lùi thêm an toàn so với điểm check cuối cùng
+        target_dist_m += safety_backoff_m # Lùi thêm an toàn so với điểm check cuối cùng
+        target_dist_m = min(max_dock_dist_m, target_dist_m)
         
         final_step = target_dist_m / res
         
@@ -1554,12 +1673,12 @@ class MainApp(QMainWindow):
             print(f"[SMART NAV] 🔄 Chuyển hướng sang tọa độ ĐỖ NGANG (Deliver Point)")
             theta_dock = theta_dock_d
             yaw = yaw_d
-            target_dist_m = target_step_d * res + 0.10
+            target_dist_m = min(max_dock_dist_m, target_step_d * res + safety_backoff_m)
             q = tf.transformations.quaternion_from_euler(0, 0, yaw)
-            w_x = ox + px_x_d * res
-            w_y = oy + px_y_d * res
+            w_x = x_final_d
+            w_y = y_final_d
             self.map_label.goal_yaw = yaw
-            self.map_label.goal_px = (px_x_d, h - px_y_d - 1)
+            self.map_label.goal_px = (int(px_final_d), h - int(py_final_d) - 1)
             
         self.request_gui_update_signal.emit()
         
@@ -1582,6 +1701,11 @@ class MainApp(QMainWindow):
             n_px_x = int(px_t + f_step * math.cos(theta_dock))
             n_px_y = int(py_t + f_step * math.sin(theta_dock))
             
+            if mode == "DELIVER":
+                shift_m = 0.3
+                n_px_x -= int((shift_m / res) * math.cos(yaw))
+                n_px_y -= int((shift_m / res) * math.sin(yaw))
+                
             n_w_x = ox + n_px_x * res
             n_w_y = oy + n_px_y * res
             
@@ -1691,8 +1815,9 @@ class MainApp(QMainWindow):
                 time.sleep(2.0)
                 
                 if attempt < max_retries - 1:
-                    print(f"   🔄 Bắn tín hiệu tính toán lại mục tiêu từ cự ly {current_dist_m + 0.10:.2f}m...")
-                    self.retry_nav_signal.emit(target_x, target_y, obs_pt_map, current_dist_m + 0.10, attempt + 1, mode)
+                    next_dist_m = min(max_dock_dist_m, current_dist_m + 0.10)
+                    print(f"   🔄 Bắn tín hiệu tính toán lại mục tiêu từ cự ly {next_dist_m:.2f}m...")
+                    self.retry_nav_signal.emit(target_x, target_y, obs_pt_map, next_dist_m, attempt + 1, mode)
                     return # Thoát thread cũ
 
                 else:
